@@ -3,15 +3,33 @@ Configuration management for the Attendance System.
 Centralizes all configuration values and settings.
 """
 import os
+import logging
 from typing import Dict, List
 from pathlib import Path
 
+# Set up logging early
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Base paths
 BASE_DIR = Path(__file__).parent
+
+# For deployment, allow override of base directory via environment variable
+# This is useful for platforms like Streamlit Cloud, Heroku, etc.
+if os.getenv("DEPLOYMENT_DATA_DIR"):
+    BASE_DIR = Path(os.getenv("DEPLOYMENT_DATA_DIR"))
+    logger = logging.getLogger(__name__)
+    logger.info(f"Using deployment data directory: {BASE_DIR}")
+
 FACES_DIR = BASE_DIR / "faces"
 EXCEL_EXPORTS_DIR = BASE_DIR / "excel_exports"
 DB_DIR = BASE_DIR / "db"
-DB_PATH = DB_DIR / "attendance.db"
+
+# Allow database path override via environment variable (useful for deployment)
+if os.getenv("DATABASE_PATH"):
+    DB_PATH = Path(os.getenv("DATABASE_PATH"))
+else:
+    DB_PATH = DB_DIR / "attendance.db"
 
 # Application settings
 APP_TITLE = "ENTC B.Tech b Facial Attendance System"

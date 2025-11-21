@@ -11,13 +11,29 @@ logger = logging.getLogger(__name__)
 # Try to import from config, fallback to default
 try:
     from config import DB_PATH
+    # Convert Path object to string if needed
+    if hasattr(DB_PATH, '__str__'):
+        DB_PATH = str(DB_PATH)
 except ImportError:
     # Fallback to default path if config not available
     DB_PATH = os.path.join("db", "attendance.db")
 
+# Ensure DB_PATH is a string
+if not isinstance(DB_PATH, str):
+    DB_PATH = str(DB_PATH)
+
 def get_connection():
     """Get a connection to the SQLite database"""
     try:
+        # Ensure directory exists
+        db_dir = os.path.dirname(DB_PATH)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
+        
+        # Log database path for debugging (especially in deployment)
+        logger.debug(f"Connecting to database at: {DB_PATH}")
+        logger.debug(f"Database file exists: {os.path.exists(DB_PATH)}")
+        
         conn = sqlite3.connect(DB_PATH, timeout=10.0)
         conn.row_factory = sqlite3.Row  # Enable row factory for column name access
         # Enable foreign keys
@@ -25,6 +41,8 @@ def get_connection():
         return conn
     except Exception as e:
         logger.error(f"Database connection error: {str(e)}")
+        logger.error(f"Database path: {DB_PATH}")
+        logger.error(f"Current working directory: {os.getcwd()}")
         raise
 
 @contextmanager
@@ -54,8 +72,17 @@ def get_db_connection() -> Generator[sqlite3.Connection, None, None]:
 
 def init_db():
     """Initialize the database with required tables if they don't exist"""
+    # Ensure DB_PATH is a string
+    db_path_str = str(DB_PATH) if not isinstance(DB_PATH, str) else DB_PATH
+    
     # Create directory if it doesn't exist
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    db_dir = os.path.dirname(db_path_str)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+        logger.info(f"Database directory created/verified: {db_dir}")
+    
+    logger.info(f"Initializing database at: {db_path_str}")
+    logger.info(f"Database file exists: {os.path.exists(db_path_str)}")
     
     conn = get_connection()
     cursor = conn.cursor()
@@ -201,7 +228,29 @@ def init_db():
         logger.info("Sample authentication users created successfully!")
     
     conn.commit()
+    
+    # Verify database was created and has tables
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = cursor.fetchall()
+    table_names = [table[0] for table in tables]
+    logger.info(f"Database initialized. Tables created: {', '.join(table_names)}")
+    
+    # Check if database has data
+    try:
+        cursor.execute("SELECT COUNT(*) FROM students")
+        student_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM subjects")
+        subject_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM attendance")
+        attendance_count = cursor.fetchone()[0]
+        logger.info(f"Database status - Students: {student_count}, Subjects: {subject_count}, Attendance records: {attendance_count}")
+    except Exception as e:
+        logger.warning(f"Could not check database data counts: {str(e)}")
+    
     conn.close()
+    
+    db_path_str = str(DB_PATH) if not isinstance(DB_PATH, str) else DB_PATH
+    logger.info(f"Database initialized successfully at: {db_path_str}")
 
 def register_student(roll_no, name, department, year, division, image_path, subject_ids, email=None):
     """Register a new student in the database"""

@@ -155,7 +155,27 @@ except ImportError as e:
 
 # Initialize the database
 try:
+    from config import DB_PATH
+    logger.info(f"Database path: {DB_PATH}")
+    logger.info(f"Database file exists: {os.path.exists(str(DB_PATH))}")
+    
     init_db()
+    
+    # Verify database connection and show status
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM students")
+        student_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM subjects")
+        subject_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM attendance")
+        attendance_count = cursor.fetchone()[0]
+        conn.close()
+        logger.info(f"Database ready - Students: {student_count}, Subjects: {subject_count}, Attendance: {attendance_count}")
+    except Exception as e:
+        logger.warning(f"Could not verify database status: {str(e)}")
+    
     # Auto-enroll all existing students in all subjects on startup
     try:
         enrolled_count = enroll_all_students_in_all_subjects()
@@ -166,7 +186,11 @@ try:
         # Don't fail app startup if enrollment fails
 except Exception as e:
     logger.error(f"Database initialization error: {str(e)}")
+    logger.error(f"Error type: {type(e).__name__}")
+    import traceback
+    logger.error(f"Traceback: {traceback.format_exc()}")
     st.error("Failed to initialize database. Check logs for details.")
+    st.error(f"Error: {str(e)}")
 
 # Initialize session state for authentication (MUST be done before any other session state access)
 # This prevents AttributeError when accessing session state variables

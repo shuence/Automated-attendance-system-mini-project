@@ -181,3 +181,4 @@ config.ini
 secrets.json
 .env.local
 .env.production
+google_credentials.json
