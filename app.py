@@ -6,11 +6,9 @@ import plotly.graph_objects as go
 import plotly.express as px
 import calendar
 
-from utils.db_utils import get_students_by_subject
-
 # Page configuration must be the first Streamlit command
 st.set_page_config(
-    page_title="ENTC B.Tech b Facial Attendance System",
+    page_title="ENTC B.Tech B Facial Attendance System",
     page_icon="👨‍🎓",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -117,7 +115,13 @@ try:
         get_student_attendance_report,
         get_student_attendance_summary,
         get_student_details,
-        get_class_attendance_summary
+        get_class_attendance_summary,
+        get_student_enrolled_subjects,
+        update_student,
+        delete_student,
+        get_students_by_subject,
+        enroll_all_students_in_all_subjects,
+        enroll_student_in_all_subjects
     )
 except ImportError as e:
     logger.error(f"Error importing database utilities: {str(e)}")
@@ -136,64 +140,276 @@ except ImportError as e:
     deepface_available = False
     st.error(f"Error loading DeepFace module. Please check installation: {str(e)}")
 
+# Try importing Google Sheets utilities
+try:
+    from utils.sheets_utils import (
+        get_sheets_exporter,
+        export_to_sheets,
+        update_attendance_sheet,
+        get_spreadsheet_info
+    )
+    sheets_available = True
+except ImportError as e:
+    logger.warning(f"Google Sheets utilities not available: {str(e)}")
+    sheets_available = False
+
 # Initialize the database
 try:
     init_db()
+    # Auto-enroll all existing students in all subjects on startup
+    try:
+        enrolled_count = enroll_all_students_in_all_subjects()
+        if enrolled_count > 0:
+            logger.info(f"Auto-enrolled {enrolled_count} student-subject relationships on startup")
+    except Exception as e:
+        logger.error(f"Error auto-enrolling students on startup: {str(e)}")
+        # Don't fail app startup if enrollment fails
 except Exception as e:
     logger.error(f"Database initialization error: {str(e)}")
     st.error("Failed to initialize database. Check logs for details.")
+
+# Initialize session state for authentication (MUST be done before any other session state access)
+# This prevents AttributeError when accessing session state variables
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+if "user" not in st.session_state:
+    st.session_state.user = None
+if "session_token" not in st.session_state:
+    st.session_state.session_token = None
+if "localStorage_restored" not in st.session_state:
+    st.session_state.localStorage_restored = False
+
+# Import authentication utilities
+try:
+    from utils.auth_utils import authenticate_user, has_permission, can_access_feature, ROLES
+    from pages.login import show_login_page
+    auth_available = True
+except ImportError as e:
+    logger.error(f"Error importing auth utilities: {str(e)}")
+    auth_available = False
+
+# Restore session from localStorage on first load only
+if not st.session_state.localStorage_restored and not st.session_state.authenticated:
+    # Use JavaScript to read token from localStorage and pass it via a one-time mechanism
+    # We'll use a hidden div that JavaScript can populate, then read it
+    restore_script = """
+    <script>
+    (function() {
+        const token = localStorage.getItem('attendance_session_token');
+        if (token) {
+            // Store token in window object and trigger a rerun with query param
+            window.attendanceToken = token;
+            const url = new URL(window.location);
+            if (!url.searchParams.has('_token')) {
+                url.searchParams.set('_token', token);
+                window.history.replaceState({}, '', url);
+                // Small delay to ensure URL is updated before rerun
+                setTimeout(function() {
+                    window.location.reload();
+                }, 100);
+            }
+        }
+    })();
+    </script>
+    """
+    st.components.v1.html(restore_script, height=0)
+    st.session_state.localStorage_restored = True
+
+# Try to restore session from persistent token
+if not st.session_state.authenticated or not st.session_state.user:
+    try:
+        from utils.session_utils import get_session_token
+        
+        # Check if we have a session token
+        token_to_check = None
+        
+        # First check session state (persists during browser session)
+        if st.session_state.session_token:
+            token_to_check = st.session_state.session_token
+        else:
+            # Check query params (set by JavaScript from localStorage)
+            query_params = st.experimental_get_query_params()
+            if '_token' in query_params:
+                token_to_check = query_params['_token'][0]
+                # Remove the token from URL after reading
+                st.experimental_set_query_params()
+        
+        if token_to_check:
+            user_data = get_session_token(token_to_check)
+            if user_data:
+                st.session_state.user = user_data
+                st.session_state.authenticated = True
+                st.session_state.session_token = token_to_check
+                st.session_state.localStorage_restored = True
+            else:
+                # Token expired or invalid, clear it
+                st.session_state.session_token = None
+                # Clear from localStorage too
+                clear_localStorage_script = """
+                <script>
+                localStorage.removeItem('attendance_session_token');
+                </script>
+                """
+                st.components.v1.html(clear_localStorage_script, height=0)
+            
+    except Exception as e:
+        logger.error(f"Error restoring session: {str(e)}")
+
+# Check authentication - show login page if not authenticated
+if not st.session_state.authenticated or not st.session_state.user:
+    if auth_available:
+        # Hide sidebar during login
+        st.markdown("""
+        <style>
+            section[data-testid="stSidebar"] {
+                display: none;
+            }
+        </style>
+        """, unsafe_allow_html=True)
+        show_login_page()
+        st.stop()
+    else:
+        st.error("Authentication system not available. Please check installation.")
+        st.stop()
+
+# User is authenticated - show main application
+user = st.session_state.user
 
 # Initialize session state for navigation
 if "page" not in st.session_state:
     st.session_state.page = "Teacher Dashboard"
 
-# Sidebar navigation with buttons
+# Sidebar navigation with user info and logout
 st.sidebar.title("Navigation")
 
-# Modern navigation with icons and better styling
+# Display user information
+st.sidebar.markdown("---")
+st.sidebar.markdown(f"**👤 {user['name']}**")
+st.sidebar.markdown(f"*{user['role']}*")
+st.sidebar.markdown(f"Department: {user['department']}")
+
+# Logout button
+if st.sidebar.button("🚪 Logout", use_container_width=True, type="secondary"):
+    # Clear session token if exists
+    if st.session_state.session_token:
+        try:
+            from utils.session_utils import delete_session_token
+            delete_session_token(st.session_state.session_token)
+        except:
+            pass
+    
+    # Clear from localStorage
+    clear_localStorage_script = """
+    <script>
+    localStorage.removeItem('attendance_session_token');
+    window.location.hash = '';
+    </script>
+    """
+    st.components.v1.html(clear_localStorage_script, height=0)
+    
+    st.session_state.authenticated = False
+    st.session_state.user = None
+    st.session_state.session_token = None
+    st.experimental_rerun()
+
+st.sidebar.markdown("---")
+
+# Modern navigation with icons and better styling (role-based)
 st.sidebar.markdown("### Main")
 if st.sidebar.button("📊 Teacher Dashboard", key="nav_dashboard", use_container_width=True):
     st.session_state.page = "Teacher Dashboard"
-    
-if st.sidebar.button("👤 Student Registration", key="nav_registration", use_container_width=True):
-    st.session_state.page = "Student Registration"
 
-if st.sidebar.button("📝 Take Attendance", key="nav_take_attendance", use_container_width=True):
-    st.session_state.page = "Take Attendance"
+# Student Management - Only for HOD and Class Teacher
+if can_access_feature(user, 'manage_students'):
+    if st.sidebar.button("👤 Student Registration", key="nav_registration", use_container_width=True):
+        st.session_state.page = "Student Registration"
+    if st.sidebar.button("✏️ Edit Students", key="nav_edit_students", use_container_width=True):
+        st.session_state.page = "Edit Students"
+
+# Take Attendance - Available to all roles
+if can_access_feature(user, 'take_attendance'):
+    if st.sidebar.button("📝 Take Attendance", key="nav_take_attendance", use_container_width=True):
+        st.session_state.page = "Take Attendance"
 
 st.sidebar.markdown("### Reports")
-if st.sidebar.button("📊 Attendance Reports", key="nav_reports", use_container_width=True):
-    st.session_state.page = "Attendance Reports"
+# Attendance Reports - Available to all roles
+if can_access_feature(user, 'view_class_reports'):
+    if st.sidebar.button("📊 Attendance Reports", key="nav_reports", use_container_width=True):
+        st.session_state.page = "Attendance Reports"
 
-if st.sidebar.button("🏫 Class-wise Reports", key="nav_class_reports", use_container_width=True):
-    st.session_state.page = "Class Reports"
-    
-if st.sidebar.button("🔄 Edit Attendance", key="nav_edit_attendance", use_container_width=True):
-    st.session_state.page = "Edit Attendance"
+    if st.sidebar.button("🏫 Class-wise Reports", key="nav_class_reports", use_container_width=True):
+        st.session_state.page = "Class Reports"
+
+# Edit Attendance - Only for HOD and Class Teacher
+if can_access_feature(user, 'edit_attendance'):
+    if st.sidebar.button("🔄 Edit Attendance", key="nav_edit_attendance", use_container_width=True):
+        st.session_state.page = "Edit Attendance"
 
 st.sidebar.markdown("### Analytics")
-if st.sidebar.button("👁️ Recognition Stats", key="nav_stats", use_container_width=True):
-    st.session_state.page = "Recognition Stats"
+if can_access_feature(user, 'view_analytics'):
+    if st.sidebar.button("👁️ Recognition Stats", key="nav_stats", use_container_width=True):
+        st.session_state.page = "Recognition Stats"
+
+# User Management - Only for HOD
+if can_access_feature(user, 'manage_users'):
+    st.sidebar.markdown("### Administration")
+    if st.sidebar.button("👥 User Management", key="nav_user_management", use_container_width=True):
+        st.session_state.page = "User Management"
+
+# Student Management - Enroll All Students
+if can_access_feature(user, 'manage_students'):
+    st.sidebar.markdown("### Quick Actions")
+    if st.sidebar.button("📚 Enroll All Students in All Subjects", key="nav_enroll_all", use_container_width=True):
+        st.session_state.page = "Enroll All Students"
+
+# Email Settings - Only for HOD
+if can_access_feature(user, 'manage_users'):
+    if st.sidebar.button("📧 Email Settings", key="nav_email_settings", use_container_width=True):
+        st.session_state.page = "Email Settings"
 
 # Get current page from session state
 page = st.session_state.page
 
-# Department, Year, Division are fixed as per requirements
-department = "ENTC"
-year = "B.Tech"
-division = "B"
+# Import configuration
+try:
+    from config import (
+        DEPARTMENT, YEAR, DIVISION, SUBJECT_SHORT_NAMES,
+        ESP32_DEFAULT_URL, ESP32_DEFAULT_USERNAME, ESP32_DEFAULT_PASSWORD,
+        REQUEST_TIMEOUT
+    )
+    department = DEPARTMENT
+    year = YEAR
+    division = DIVISION
+    subject_short_names = SUBJECT_SHORT_NAMES
+except ImportError:
+    # Fallback to hardcoded values if config not available
+    department = "ENTC"
+    year = "B.Tech"
+    division = "B"
+    subject_short_names = {
+        "Fiber Optic Communication": "FOC",
+        "Microwave Engineering": "ME",
+        "Mobile Computing ": "MC",
+        "E-Waste Management": "Ewaste",
+        "Data Structures and Algorithms in Java": "DSAJ",
+        "Engineering Economics and Financial Management": "EEFM",
+        "Microwave Engineering Lab": "ME Lab",
+        "Mini Project": "Mini project"
+    }
+    ESP32_DEFAULT_URL = "http://192.168.137.208:8080"
+    ESP32_DEFAULT_USERNAME = "admin"
+    ESP32_DEFAULT_PASSWORD = "admin"
+    REQUEST_TIMEOUT = 10
 
-# Subject code to short name mapping
-subject_short_names = {
-    "Fiber Optic Communication": "FOC",
-    "Microwave Engineering": "ME",
-    "Mobile Computing ": "MC",
-    "E-Waste Management": "Ewaste",
-    "Data Structures and Algorithms in Java": "DSAJ",
-    "Engineering Economics and Financial Management": "EEFM",
-    "Microwave Engineering Lab": "ME Lab",
-    "Mini Project": "Mini project"
-}
+# Import validators
+try:
+    from utils.validators import validate_esp32_url, validate_roll_number, validate_name, validate_email
+except ImportError:
+    # Fallback: create dummy validators if not available
+    def validate_esp32_url(url): return (True, None)
+    def validate_roll_number(roll_no): return (True, None)
+    def validate_name(name): return (True, None)
+    def validate_email(email): return (True, None)
 
 # Helper function to check if a file is an uploaded file
 def is_uploaded_file(file_obj):
@@ -357,8 +573,9 @@ if page == "Teacher Dashboard":
                 excel_path = os.path.join("excel_exports", f"Students_{department}_{year}{division}.xlsx")
                 try:
                     # Using context manager to ensure the file is properly closed
+                    student_df_export = filtered_df.drop(columns=["ID"])
                     with pd.ExcelWriter(excel_path, mode='w') as writer:
-                        filtered_df.drop(columns=["ID"]).to_excel(writer, index=False)
+                        student_df_export.to_excel(writer, index=False)
                     
                     with open(excel_path, "rb") as file:
                         st.download_button(
@@ -367,6 +584,22 @@ if page == "Teacher Dashboard":
                             file_name=f"Students_{department}_{year}{division}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
+                    
+                    # Export to Google Sheets in parallel
+                    if sheets_available:
+                        try:
+                            worksheet_name = f"Students_{department}_{year}{division}"
+                            if export_to_sheets(student_df_export, worksheet_name):
+                                sheets_info = get_spreadsheet_info()
+                                if sheets_info and sheets_info.get('url'):
+                                    st.success(f"✅ Student list exported to Google Sheets")
+                                    st.info(f"📊 [Open Google Sheet]({sheets_info['url']})")
+                                else:
+                                    st.success(f"✅ Student list also exported to Google Sheets")
+                            else:
+                                logger.warning("Google Sheets export failed for student list, but Excel export succeeded")
+                        except Exception as sheets_error:
+                            logger.error(f"Error exporting student list to Google Sheets: {str(sheets_error)}")
                 except Exception as e:
                     logger.error(f"Error exporting student list to Excel: {str(e)}")
                     st.error(f"Failed to export student list: {str(e)}")
@@ -410,18 +643,7 @@ if page == "Teacher Dashboard":
                                 
                                 # Get student's enrolled subjects
                                 try:
-                                    conn = get_connection()
-                                    cursor = conn.cursor()
-                                    
-                                    cursor.execute('''
-                                        SELECT s.code, s.name
-                                        FROM subjects s
-                                        JOIN student_subjects ss ON s.id = ss.subject_id
-                                        WHERE ss.student_id = ?
-                                    ''', (student_id,))
-                                    
-                                    enrolled_subjects = cursor.fetchall()
-                                    conn.close()
+                                    enrolled_subjects = get_student_enrolled_subjects(student_id)
                                     
                                     if enrolled_subjects:
                                         st.markdown("**Enrolled Subjects:**")
@@ -429,8 +651,8 @@ if page == "Teacher Dashboard":
                                         # Display subjects as badges in a more modern way
                                         subject_badges = []
                                         for subject in enrolled_subjects:
-                                            subject_code = subject[0]
-                                            subject_name = subject[1]
+                                            subject_code = subject['code']
+                                            subject_name = subject['name']
                                             short_name = subject_short_names.get(subject_name, subject_code)
                                             subject_badges.append(f"<span style='display:inline-block; margin:2px; padding:4px 8px; background-color:#1E3A8A; color:white; border-radius:12px; font-size:0.8em;'>{short_name}</span>")
                                         
@@ -457,10 +679,26 @@ if page == "Teacher Dashboard":
                                             # Just skip attendance display if there's an error
                                             pass
                                     else:
-                                        st.warning("Student is not enrolled in any subjects.")
+                                        # Only show this message if user has permission to manage students
+                                        if can_access_feature(user, 'manage_students'):
+                                            st.info("ℹ️ **Note:** This student is not enrolled in any subjects yet.")
+                                            st.markdown("💡 **To enroll this student:** Go to **✏️ Edit Students** page or use **👤 Student Registration** to update their enrollment.")
+                                            
+                                            # Show available subjects for reference
+                                            try:
+                                                all_subjects = get_subjects()
+                                                if all_subjects:
+                                                    st.markdown("**Available subjects in database:**")
+                                                    subject_list = ", ".join([f"{s[1]} ({s[2]})" for s in all_subjects])
+                                                    st.caption(subject_list)
+                                            except:
+                                                pass
+                                        else:
+                                            # For teachers without edit permissions, just show a simple note
+                                            st.info("ℹ️ This student is not enrolled in any subjects.")
                                 except Exception as e:
-                                    logger.error(f"Error retrieving enrolled subjects: {str(e)}")
-                                    st.error("Failed to retrieve enrolled subjects.")
+                                    logger.error(f"Error retrieving enrolled subjects: {str(e)}\n{traceback.format_exc()}")
+                                    st.error(f"Failed to retrieve enrolled subjects: {str(e)}")
                         else:
                             st.error("Student details not found in database.")
                     except Exception as e:
@@ -473,8 +711,139 @@ if page == "Teacher Dashboard":
         logger.error(f"Error loading student data: {str(e)}\n{traceback.format_exc()}")
         st.error(f"Error: {str(e)}")
 
+elif page == "User Management":
+    # Only HOD can access user management
+    if not can_access_feature(user, 'manage_users'):
+        st.error("❌ Access Denied: You do not have permission to access User Management.")
+        st.info("Only HOD (Head of Department) can manage users.")
+    else:
+        st.title("👥 User Management")
+        st.markdown("---")
+        
+        try:
+            from utils.auth_utils import get_all_users, create_user, update_user_password, ROLES
+            
+            # Tabs for different management functions
+            tab1, tab2, tab3 = st.tabs(["View Users", "Create User", "Change Password"])
+            
+            with tab1:
+                st.subheader("All Users")
+                users = get_all_users()
+                
+                if users:
+                    # Display users in a table
+                    user_data = []
+                    for u in users:
+                        user_data.append({
+                            'ID': u['id'],
+                            'Username': u['username'],
+                            'Name': u['name'],
+                            'Role': u['role'],
+                            'Email': u['email'] or 'N/A',
+                            'Department': u['department'],
+                            'Status': 'Active' if u['is_active'] else 'Inactive',
+                            'Last Login': u['last_login'] or 'Never',
+                            'Created': u['created_at']
+                        })
+                    
+                    df = pd.DataFrame(user_data)
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    
+                    # Statistics
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Total Users", len(users))
+                    with col2:
+                        hod_count = sum(1 for u in users if u['role'] == 'HOD')
+                        st.metric("HOD", hod_count)
+                    with col3:
+                        ct_count = sum(1 for u in users if u['role'] == 'Class Teacher')
+                        st.metric("Class Teachers", ct_count)
+                    with col4:
+                        t_count = sum(1 for u in users if u['role'] == 'Teacher')
+                        st.metric("Teachers", t_count)
+                else:
+                    st.info("No users found.")
+            
+            with tab2:
+                st.subheader("Create New User")
+                with st.form("create_user_form"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        new_username = st.text_input("Username *", help="Must be unique")
+                        new_name = st.text_input("Full Name *")
+                        new_email = st.text_input("Email")
+                    with col2:
+                        new_role = st.selectbox("Role *", options=list(ROLES.keys()), 
+                                               format_func=lambda x: ROLES[x]['name'])
+                        new_department = st.text_input("Department", value=user['department'])
+                        new_password = st.text_input("Password *", type="password", 
+                                                    help="Minimum 6 characters recommended")
+                    
+                    create_button = st.form_submit_button("Create User", type="primary")
+                    
+                    if create_button:
+                        if not all([new_username, new_name, new_role, new_password]):
+                            st.error("⚠️ Please fill in all required fields (marked with *)")
+                        elif len(new_password) < 6:
+                            st.error("⚠️ Password must be at least 6 characters long")
+                        else:
+                            success, error_msg = create_user(
+                                new_username, new_password, new_role, 
+                                new_name, new_email, new_department
+                            )
+                            if success:
+                                st.success(f"✅ User '{new_username}' created successfully!")
+                                st.experimental_rerun()
+                            else:
+                                st.error(f"❌ {error_msg}")
+            
+            with tab3:
+                st.subheader("Change Password")
+                st.info("Select a user and enter their current and new password.")
+                
+                users_list = get_all_users()
+                if users_list:
+                    user_options = {f"{u['username']} ({u['name']})": u['id'] for u in users_list}
+                    selected_user_display = st.selectbox("Select User", options=list(user_options.keys()))
+                    selected_user_id = user_options[selected_user_display]
+                    
+                    with st.form("change_password_form"):
+                        old_password = st.text_input("Current Password", type="password")
+                        new_password = st.text_input("New Password", type="password")
+                        confirm_password = st.text_input("Confirm New Password", type="password")
+                        
+                        change_button = st.form_submit_button("Change Password", type="primary")
+                        
+                        if change_button:
+                            if not all([old_password, new_password, confirm_password]):
+                                st.error("⚠️ Please fill in all fields")
+                            elif new_password != confirm_password:
+                                st.error("⚠️ New passwords do not match")
+                            elif len(new_password) < 6:
+                                st.error("⚠️ New password must be at least 6 characters long")
+                            else:
+                                success, error_msg = update_user_password(
+                                    selected_user_id, old_password, new_password
+                                )
+                                if success:
+                                    st.success("✅ Password changed successfully!")
+                                else:
+                                    st.error(f"❌ {error_msg}")
+                else:
+                    st.info("No users found.")
+                    
+        except Exception as e:
+            logger.error(f"Error in User Management: {str(e)}\n{traceback.format_exc()}")
+            st.error(f"Error: {str(e)}")
+
 elif page == "Student Registration":
-    st.title("👤 Student Registration")
+    # Check permission
+    if not can_access_feature(user, 'manage_students'):
+        st.error("❌ Access Denied: You do not have permission to register students.")
+        st.info("Only HOD and Class Teachers can register students.")
+    else:
+        st.title("👤 Student Registration")
     
     with st.form("student_registration"):
         name = st.text_input("Full Name")
@@ -491,24 +860,24 @@ elif page == "Student Registration":
             subjects = get_subjects()
             subject_options = [subject[1] for subject in subjects]  # Use code instead of full name
             
-            # Add select all option
+            # Subject enrollment - default to all subjects
             st.subheader("Subject Enrollment")
-            select_all = st.checkbox("Select All Subjects", value=False)
+            select_all = st.checkbox("Select All Subjects", value=True, help="By default, students are enrolled in all subjects")
             
             if select_all:
                 selected_subjects = subject_options
-                st.info(f"All {len(subject_options)} subjects selected")
+                st.info(f"✅ All {len(subject_options)} subjects will be selected by default")
                 # Show the list of selected subjects for clarity
-                st.write("Enrolled in:", ", ".join(selected_subjects))
+                st.write("**Enrolled in:**", ", ".join(selected_subjects))
             else:
-                selected_subjects = st.multiselect("Select Enrolled Subjects", subject_options)
+                selected_subjects = st.multiselect("Select Enrolled Subjects", subject_options, default=subject_options, help="You can deselect specific subjects if needed")
                 
         except Exception as e:
             logger.error(f"Error loading subjects: {str(e)}")
             st.error("Failed to load subjects. Please check database connection.")
             subjects = []
             selected_subjects = []
-            select_all = False
+            select_all = True  # Default to True even on error
         
         # Face image upload
         face_image = st.file_uploader("Upload Face Image", type=["jpg", "jpeg", "png"])
@@ -524,35 +893,291 @@ elif page == "Student Registration":
         submitted = st.form_submit_button("Register Student")
         
         if submitted:
-            if not name or not roll_no or not face_image or not selected_subjects:
-                st.error("All fields are required except email")
+            if not name or not roll_no or not face_image:
+                st.error("Name, Roll Number, and Face Image are required fields")
             else:
                 try:
-                    # Save face image
-                    image_path = os.path.join("faces", f"{roll_no}.jpg")
-                    with open(image_path, "wb") as f:
-                        f.write(face_image.getvalue())
-                    
-                    # Get subject IDs from selected subject names
-                    subject_ids = [subject[0] for subject in subjects if subject[1] in selected_subjects]
-                    
-                    # Register student in database
-                    student_id = register_student(roll_no, name, department, year, division, image_path, subject_ids, email)
-                    
-                    if student_id:
-                        st.success(f"Student {name} registered successfully!")
-                        if select_all:
-                            st.success(f"Enrolled in all {len(subject_options)} subjects")
-                        else:
-                            st.success(f"Enrolled in {len(selected_subjects)} subjects")
+                    # If no subjects selected, default to all subjects
+                    if not selected_subjects and subjects:
+                        selected_subjects = subject_options
+                        subject_ids = [subject[0] for subject in subjects]
+                        st.info("ℹ️ No subjects selected. Enrolling in all subjects by default.")
+                    elif selected_subjects:
+                        # Get subject IDs from selected subject names
+                        subject_ids = [subject[0] for subject in subjects if subject[1] in selected_subjects]
                     else:
-                        st.error("Failed to register student. Roll number may already exist.")
+                        st.error("No subjects available. Please check database configuration.")
+                        subject_ids = []
+                    
+                    if subject_ids:
+                        # Save face image
+                        image_path = os.path.join("faces", f"{roll_no}.jpg")
+                        with open(image_path, "wb") as f:
+                            f.write(face_image.getvalue())
+                        
+                        # Register student in database
+                        student_id = register_student(roll_no, name, department, year, division, image_path, subject_ids, email)
+                        
+                        if student_id:
+                            st.success(f"✅ Student {name} registered successfully!")
+                            st.success(f"📚 Enrolled in {len(subject_ids)} subject(s)")
+                        else:
+                            st.error("Failed to register student. Roll number may already exist.")
+                    else:
+                        st.error("Cannot register student without subjects. Please check database.")
                 except Exception as e:
                     logger.error(f"Error registering student: {str(e)}")
                     st.error(f"Error registering student: {str(e)}")
 
+elif page == "Edit Students":
+    # Check permission
+    if not can_access_feature(user, 'manage_students'):
+        st.error("❌ Access Denied: You do not have permission to edit students.")
+        st.info("Only HOD and Class Teachers can edit students.")
+    else:
+        st.title("✏️ Edit Students")
+        st.markdown("---")
+        
+        try:
+            # Get all students
+            students = get_all_students()
+            
+            if not students:
+                st.info("No students found in the database.")
+            else:
+                # Student selection
+                student_options = {f"{s['roll_no']} - {s['name']}": s['id'] for s in students}
+                selected_student_display = st.selectbox(
+                    "Select Student to Edit",
+                    options=list(student_options.keys()),
+                    key="edit_student_select"
+                )
+                selected_student_id = student_options[selected_student_display]
+                
+                # Get student details
+                student_details = get_student_details(selected_student_id)
+                enrolled_subjects = get_student_enrolled_subjects(selected_student_id)
+                enrolled_subject_ids = [s['id'] for s in enrolled_subjects]
+                
+                if student_details:
+                    st.markdown("---")
+                    st.subheader("Edit Student Information")
+                    
+                    with st.form("edit_student_form"):
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            new_roll_no = st.text_input("Roll Number", value=student_details['roll_no'])
+                            new_name = st.text_input("Full Name", value=student_details['name'])
+                            new_email = st.text_input("Email Address", value=student_details['email'] or '')
+                        
+                        with col2:
+                            st.text(f"Department: {student_details['department']}")
+                            st.text(f"Year: {student_details['year']}")
+                            st.text(f"Division: {student_details['division']}")
+                        
+                        # Subject enrollment
+                        st.subheader("Subject Enrollment")
+                        try:
+                            all_subjects = get_subjects()
+                            subject_options = {f"{s[1]} ({s[2]})": s[0] for s in all_subjects}
+                            
+                            # Pre-select enrolled subjects
+                            selected_subject_ids = st.multiselect(
+                                "Select Enrolled Subjects",
+                                options=list(subject_options.values()),
+                                default=enrolled_subject_ids,
+                                format_func=lambda x: next((f"{s[1]} ({s[2]})" for s in all_subjects if s[0] == x), str(x))
+                            )
+                        except Exception as e:
+                            logger.error(f"Error loading subjects: {str(e)}")
+                            st.error("Failed to load subjects.")
+                            selected_subject_ids = enrolled_subject_ids
+                        
+                        # Image update
+                        st.subheader("Update Face Image (Optional)")
+                        new_face_image = st.file_uploader(
+                            "Upload New Face Image",
+                            type=["jpg", "jpeg", "png"],
+                            help="Leave empty to keep current image"
+                        )
+                        
+                        if new_face_image is not None:
+                            try:
+                                st.image(new_face_image, caption="New Face Image", width=200)
+                            except Exception as e:
+                                logger.error(f"Error displaying image: {str(e)}")
+                        
+                        # Action buttons
+                        col_btn1, col_btn2, col_btn3 = st.columns(3)
+                        
+                        with col_btn1:
+                            update_button = st.form_submit_button("💾 Update Student", type="primary", use_container_width=True)
+                        with col_btn2:
+                            delete_button = st.form_submit_button("🗑️ Delete Student", use_container_width=True)
+                        with col_btn3:
+                            cancel_button = st.form_submit_button("❌ Cancel", use_container_width=True)
+                        
+                        if update_button:
+                            try:
+                                # Validate inputs
+                                if not new_roll_no or not new_name:
+                                    st.error("⚠️ Roll number and name are required fields.")
+                                else:
+                                    # Handle image update
+                                    new_image_path = None
+                                    if new_face_image is not None:
+                                        new_image_path = os.path.join("faces", f"{new_roll_no}.jpg")
+                                        with open(new_image_path, "wb") as f:
+                                            f.write(new_face_image.getvalue())
+                                    
+                                    # Update student
+                                    success = update_student(
+                                        student_id=selected_student_id,
+                                        roll_no=new_roll_no,
+                                        name=new_name,
+                                        email=new_email if new_email else None,
+                                        image_path=new_image_path,
+                                        subject_ids=selected_subject_ids
+                                    )
+                                    
+                                    if success:
+                                        st.success(f"✅ Student {new_name} updated successfully!")
+                                        st.experimental_rerun()
+                                    else:
+                                        st.error("❌ Failed to update student. Roll number may already be in use.")
+                            except Exception as e:
+                                logger.error(f"Error updating student: {str(e)}\n{traceback.format_exc()}")
+                                st.error(f"Error updating student: {str(e)}")
+                        
+                        if delete_button:
+                            # Show confirmation
+                            st.warning("⚠️ Are you sure you want to delete this student? This action cannot be undone!")
+                            confirm_delete = st.checkbox("I confirm I want to delete this student")
+                            
+                            if confirm_delete:
+                                try:
+                                    if delete_student(selected_student_id):
+                                        st.success("✅ Student deleted successfully!")
+                                        st.experimental_rerun()
+                                    else:
+                                        st.error("❌ Failed to delete student.")
+                                except Exception as e:
+                                    logger.error(f"Error deleting student: {str(e)}\n{traceback.format_exc()}")
+                                    st.error(f"Error deleting student: {str(e)}")
+                else:
+                    st.error("Student details not found.")
+                    
+        except Exception as e:
+            logger.error(f"Error in Edit Students page: {str(e)}\n{traceback.format_exc()}")
+            st.error(f"Error: {str(e)}")
+
+elif page == "Enroll All Students":
+    # Check permission
+    if not can_access_feature(user, 'manage_students'):
+        st.error("❌ Access Denied: You do not have permission to enroll students.")
+        st.info("Only HOD and Class Teachers can enroll students.")
+    else:
+        st.title("📚 Enroll All Students in All Subjects")
+        st.markdown("---")
+        st.info("""
+        **What this does:**
+        - Enrolls all existing students in all available subjects
+        - Only creates new enrollments (won't duplicate existing ones)
+        - Safe to run multiple times
+        """)
+        
+        try:
+            # Get counts
+            all_students = get_all_students()
+            all_subjects = get_subjects()
+            
+            if not all_students:
+                st.warning("No students found in the database.")
+            elif not all_subjects:
+                st.warning("No subjects found in the database.")
+            else:
+                st.markdown("### Summary")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Students", len(all_students))
+                with col2:
+                    st.metric("Total Subjects", len(all_subjects))
+                with col3:
+                    st.metric("Potential Enrollments", len(all_students) * len(all_subjects))
+                
+                st.markdown("---")
+                
+                if st.button("🚀 Enroll All Students in All Subjects", type="primary", use_container_width=True):
+                    with st.spinner("Enrolling students in subjects..."):
+                        enrolled_count = enroll_all_students_in_all_subjects()
+                        
+                        if enrolled_count > 0:
+                            st.success(f"✅ Successfully created {enrolled_count} enrollments!")
+                            st.info(f"All {len(all_students)} students are now enrolled in all {len(all_subjects)} subjects.")
+                            st.experimental_rerun()
+                        else:
+                            st.info("ℹ️ All students are already enrolled in all subjects, or no enrollments were needed.")
+                
+                # Show current enrollment status
+                st.markdown("---")
+                st.markdown("### Current Enrollment Status")
+                
+                try:
+                    conn = get_connection()
+                    cursor = conn.cursor()
+                    
+                    # Get enrollment statistics
+                    cursor.execute('''
+                        SELECT 
+                            s.id,
+                            s.roll_no,
+                            s.name,
+                            COUNT(ss.subject_id) as enrolled_count
+                        FROM students s
+                        LEFT JOIN student_subjects ss ON s.id = ss.student_id
+                        GROUP BY s.id
+                        ORDER BY s.roll_no
+                    ''')
+                    
+                    enrollment_data = []
+                    for row in cursor.fetchall():
+                        enrollment_data.append({
+                            'Roll No': row['roll_no'],
+                            'Name': row['name'],
+                            'Enrolled Subjects': row['enrolled_count'],
+                            'Status': '✅ Complete' if row['enrolled_count'] == len(all_subjects) else '⚠️ Incomplete'
+                        })
+                    
+                    conn.close()
+                    
+                    if enrollment_data:
+                        enrollment_df = pd.DataFrame(enrollment_data)
+                        st.dataframe(enrollment_df, use_container_width=True, hide_index=True)
+                        
+                        # Summary
+                        complete = sum(1 for e in enrollment_data if e['Status'] == '✅ Complete')
+                        incomplete = len(enrollment_data) - complete
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric("Fully Enrolled", complete)
+                        with col2:
+                            st.metric("Needs Enrollment", incomplete)
+                except Exception as e:
+                    logger.error(f"Error getting enrollment status: {str(e)}")
+                    st.error(f"Error retrieving enrollment status: {str(e)}")
+                    
+        except Exception as e:
+            logger.error(f"Error in Enroll All Students page: {str(e)}\n{traceback.format_exc()}")
+            st.error(f"Error: {str(e)}")
+
 elif page == "Take Attendance":
-    st.title("📝 Take Attendance")
+    # Check permission
+    if not can_access_feature(user, 'take_attendance'):
+        st.error("❌ Access Denied: You do not have permission to take attendance.")
+    else:
+        st.title("📝 Take Attendance")
     st.markdown('<div class="dashboard-card"><p>Capture attendance using facial recognition.</p></div>', unsafe_allow_html=True)
     st.subheader(f"Department: {department} | Year: {year} | Division: {division}")
     
@@ -723,9 +1348,16 @@ elif page == "Take Attendance":
         with col1:
             esp32_base_url = st.text_input(
                 "ESP32-CAM Base URL", 
-                value="http://192.168.137.208:8080",
+                value=ESP32_DEFAULT_URL,
                 help="Enter the base URL of your ESP32-CAM including port if needed (e.g., http://192.168.137.208:8080)"
             )
+            # Validate URL
+            if esp32_base_url:
+                is_valid, error_msg = validate_esp32_url(esp32_base_url)
+                if not is_valid:
+                    st.error(f"❌ {error_msg}")
+                elif error_msg and "Warning" in error_msg:
+                    st.warning(error_msg)
         
         with col2:
             use_auth = st.checkbox("Use Authentication", value=True, help="Enable if your ESP32-CAM requires login")
@@ -735,9 +1367,9 @@ elif page == "Take Attendance":
         if use_auth:
             auth_col1, auth_col2 = st.columns(2)
             with auth_col1:
-                esp32_username = st.text_input("Username", value="admin", help="ESP32-CAM username")
+                esp32_username = st.text_input("Username", value=ESP32_DEFAULT_USERNAME, help="ESP32-CAM username")
             with auth_col2:
-                esp32_password = st.text_input("Password", type="password", value="admin", help="ESP32-CAM password")
+                esp32_password = st.text_input("Password", type="password", value=ESP32_DEFAULT_PASSWORD, help="ESP32-CAM password")
         
         # Build URLs
         stream_url = f"{esp32_base_url}/stream"
@@ -752,14 +1384,18 @@ elif page == "Take Attendance":
         # Display live stream
         st.subheader("Live Stream")
         
-        # Build stream URL with authentication in URL if needed
+        # SECURITY FIX: Do not embed credentials in URL (security risk)
+        # For authenticated streams, we'll use a note instead
         if use_auth and esp32_username and esp32_password:
-            # For HTML display, we need to embed credentials in URL (works for local network)
-            stream_display_url = f"{esp32_base_url.replace('http://', f'http://{esp32_username}:{esp32_password}@')}/stream"
+            st.warning("⚠️ **Security Note**: Live stream display with authentication may not work directly in the browser. Use the 'Capture Image' button to take snapshots instead.")
+            # Show stream URL without credentials for reference
+            st.info(f"Stream URL: `{stream_url}` (authentication required)")
+            stream_display_url = stream_url
         else:
             stream_display_url = stream_url
         
         # Display stream using HTML - works with MJPEG streams
+        # Note: For authenticated streams, browser may block the request
         stream_html = f"""
         <div style="text-align: center; margin: 20px 0;">
             <img src="{stream_display_url}" 
@@ -780,7 +1416,7 @@ elif page == "Take Attendance":
             try:
                 with st.spinner("Capturing image from ESP32-CAM..."):
                     # Try capture endpoint first
-                    response = requests.get(capture_url, auth=auth, timeout=10)
+                    response = requests.get(capture_url, auth=auth, timeout=REQUEST_TIMEOUT)
                     
                     if response.status_code == 200:
                         # Save the captured image
@@ -807,7 +1443,7 @@ elif page == "Take Attendance":
                         captured = False
                         for alt_url in alt_urls:
                             try:
-                                alt_response = requests.get(alt_url, auth=auth, timeout=5)
+                                alt_response = requests.get(alt_url, auth=auth, timeout=REQUEST_TIMEOUT)
                                 if alt_response.status_code == 200 and alt_response.headers.get('content-type', '').startswith('image'):
                                     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                                     image_path = f"captured_{timestamp}.jpg"
@@ -981,16 +1617,36 @@ elif page == "Take Attendance":
                             print(f"DEBUG: Trying to mark attendance for {len(marked_ids)} students")
                             print(f"DEBUG: subject_id={subject_id}, date={selected_date}, period={selected_period}")
                             
+                            # Get all students enrolled in this subject
+                            all_enrolled_students = get_students_by_subject(subject_id)
+                            all_enrolled_ids = [s["id"] for s in all_enrolled_students]
+                            
+                            # Mark present students
                             for student_id in marked_ids:
                                 print(f"DEBUG: Marking attendance for student_id={student_id}")
-                                success = mark_attendance(student_id, subject_id, selected_date, selected_period)
+                                success = mark_attendance(student_id, subject_id, selected_date, selected_period, status="present")
                                 print(f"DEBUG: Attendance marking result: {success}")
                                 if success:
                                     success_count += 1
                             
+                            # Mark absent students (those enrolled but not selected)
+                            absent_student_ids = [sid for sid in all_enrolled_ids if sid not in marked_ids]
+                            absent_count = 0
+                            
+                            if absent_student_ids:
+                                print(f"DEBUG: Marking {len(absent_student_ids)} students as absent")
+                                for student_id in absent_student_ids:
+                                    success = mark_attendance(student_id, subject_id, selected_date, selected_period, status="absent")
+                                    if success:
+                                        absent_count += 1
+                            
                             if success_count > 0:
-                                st.success(f"✅ Attendance saved for {success_count} students on {selected_date}!")
-                                print(f"DEBUG: Successfully saved attendance for {success_count} students")
+                                message = f"✅ Attendance saved for {success_count} present students"
+                                if absent_count > 0:
+                                    message += f" and {absent_count} absent students"
+                                message += f" on {selected_date}!"
+                                st.success(message)
+                                print(f"DEBUG: Successfully saved attendance for {success_count} present and {absent_count} absent students")
                                 
                                 # Store attendance data in session state before clearing
                                 st.session_state.last_attendance = {
@@ -1140,21 +1796,41 @@ elif page == "Take Attendance":
                             success_count = 0
                             
                             # Get student IDs for marking attendance
-                            student_ids = [student["id"] for student in present_students]
+                            present_student_ids = [student["id"] for student in present_students]
                             
-                            print(f"DEBUG: Automatically marking attendance for {len(student_ids)} students")
+                            # Get all students enrolled in this subject
+                            all_enrolled_students = get_students_by_subject(subject_id)
+                            all_enrolled_ids = [s["id"] for s in all_enrolled_students]
+                            
+                            # Mark present students
+                            print(f"DEBUG: Automatically marking attendance for {len(present_student_ids)} present students")
                             print(f"DEBUG: subject_id={subject_id}, date={selected_date}, period={selected_period}")
                             
-                            for student_id in student_ids:
+                            for student_id in present_student_ids:
                                 print(f"DEBUG: Marking attendance for student_id={student_id}")
-                                success = mark_attendance(student_id, subject_id, selected_date, selected_period)
+                                success = mark_attendance(student_id, subject_id, selected_date, selected_period, status="present")
                                 print(f"DEBUG: Attendance marking result: {success}")
                                 if success:
                                     success_count += 1
                             
+                            # Mark absent students (those enrolled but not present)
+                            absent_student_ids = [sid for sid in all_enrolled_ids if sid not in present_student_ids]
+                            absent_count = 0
+                            
+                            if absent_student_ids:
+                                print(f"DEBUG: Marking {len(absent_student_ids)} students as absent")
+                                for student_id in absent_student_ids:
+                                    success = mark_attendance(student_id, subject_id, selected_date, selected_period, status="absent")
+                                    if success:
+                                        absent_count += 1
+                            
                             if success_count > 0:
-                                st.success(f"✅ Attendance automatically saved for {success_count} students on {selected_date}!")
-                                print(f"DEBUG: Successfully saved attendance for {success_count} students")
+                                message = f"✅ Attendance automatically saved for {success_count} present students"
+                                if absent_count > 0:
+                                    message += f" and {absent_count} absent students"
+                                message += f" on {selected_date}!"
+                                st.success(message)
+                                print(f"DEBUG: Successfully saved attendance for {success_count} present and {absent_count} absent students")
                                 
                                 # Store attendance data in session state
                                 st.session_state.last_attendance = {
@@ -1213,9 +1889,18 @@ elif page == "Take Attendance":
         st.error("DeepFace module is not available. Please check installation and dependencies.")
 
 elif page == "Attendance Reports":
-    st.title("📊 Attendance Reports")
-    
-    try:
+    # Check permission
+    if not can_access_feature(user, 'view_class_reports'):
+        st.error("❌ Access Denied: You do not have permission to view attendance reports.")
+    else:
+        st.title("📊 Attendance Reports")
+        
+        try:
+            pass
+        except Exception as e:
+            logger.error(f"Error loading attendance report page: {str(e)}")
+            st.error(f"Error: {str(e)}")
+
         # Get subjects from database
         subjects = get_subjects()
         subject_options = [subject[1] for subject in subjects]  # Use code instead of full name
@@ -1283,6 +1968,9 @@ elif page == "Attendance Reports":
                         
                         pivot_df = pd.DataFrame(pivot_data)
                         
+                        # Track the final dataframe for Google Sheets export
+                        final_df_for_export = pivot_df
+                        
                         try:
                             # Check if file exists already
                             if os.path.exists(excel_path):
@@ -1295,12 +1983,14 @@ elif page == "Attendance Reports":
                                         
                                         # Merge the dataframes
                                         merged_df = pd.merge(existing_df, pivot_df, on=["Roll No", "Name", "Email"], how="outer")
+                                        final_df_for_export = merged_df
                                         # Save with context manager to ensure file is closed
                                         with pd.ExcelWriter(excel_path, mode='w') as writer:
                                             merged_df.to_excel(writer, index=False)
                                     except Exception as excel_read_error:
                                         logger.error(f"Error reading existing Excel: {str(excel_read_error)}")
                                         # If existing file has issues, just write the new one
+                                        final_df_for_export = pivot_df
                                         with pd.ExcelWriter(excel_path, mode='w') as writer:
                                             pivot_df.to_excel(writer, index=False)
                                 except Exception as excel_write_error:
@@ -1309,6 +1999,7 @@ elif page == "Attendance Reports":
                                     try:
                                         # Use a new filename if the original is locked
                                         alt_excel_path = excel_path.replace(".xlsx", f"_{int(time.time())}.xlsx")
+                                        final_df_for_export = pivot_df
                                         pivot_df.to_excel(alt_excel_path, index=False)
                                         excel_path = alt_excel_path
                                     except Exception as e:
@@ -1316,6 +2007,7 @@ elif page == "Attendance Reports":
                                         raise
                             else:
                                 # Create new Excel file with context manager
+                                final_df_for_export = pivot_df
                                 with pd.ExcelWriter(excel_path, mode='w') as writer:
                                     pivot_df.to_excel(writer, index=False)
                             
@@ -1328,6 +2020,28 @@ elif page == "Attendance Reports":
                                         file_name=f"{selected_subject}_{report_date}.xlsx",
                                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                                     )
+                            
+                            # Export to Google Sheets in parallel
+                            if sheets_available:
+                                try:
+                                    # Remove Email column if present for Google Sheets (optional)
+                                    if "Email" in final_df_for_export.columns:
+                                        df_to_export_sheets = final_df_for_export.drop(columns=["Email"])
+                                    else:
+                                        df_to_export_sheets = final_df_for_export
+                                    
+                                    if update_attendance_sheet(df_to_export_sheets, selected_subject):
+                                        sheets_info = get_spreadsheet_info()
+                                        if sheets_info and sheets_info.get('url'):
+                                            st.success(f"✅ Attendance data exported to Google Sheets")
+                                            st.info(f"📊 [Open Google Sheet]({sheets_info['url']})")
+                                        else:
+                                            st.success(f"✅ Attendance data also exported to Google Sheets")
+                                    else:
+                                        logger.warning("Google Sheets export failed, but Excel export succeeded")
+                                except Exception as sheets_error:
+                                    logger.error(f"Error exporting to Google Sheets: {str(sheets_error)}")
+                                    # Don't show error to user if Excel succeeded - Sheets is optional
                         except Exception as excel_error:
                             logger.error(f"Error exporting to Excel: {str(excel_error)}")
                             st.error(f"Error exporting to Excel: {str(excel_error)}")
@@ -1335,12 +2049,108 @@ elif page == "Attendance Reports":
                         # Option to notify absent students
                         absent_students = df[df["Status"] == "❌"]
                         if not absent_students.empty and st.button("Send Email Notifications to Absent Students"):
-                            st.info("Email notification feature is under development.")
-                            # In a real implementation, this would integrate with an email service
-                            # to send notifications to the absent students
-                            for _, student in absent_students.iterrows():
-                                if student["Email"]:
-                                    st.write(f"Would send notification to: {student['Email']}")
+                            try:
+                                from utils.email_utils import send_bulk_attendance_emails
+                                from config import EMAIL_ENABLED
+                                
+                                if not EMAIL_ENABLED:
+                                    st.warning("⚠️ Email notifications are disabled. Please enable EMAIL_ENABLED in configuration.")
+                                else:
+                                    # Prepare attendance records for email sending
+                                    attendance_records = []
+                                    for _, student in absent_students.iterrows():
+                                        if student["Email"] and pd.notna(student["Email"]) and str(student["Email"]).strip():
+                                            attendance_records.append({
+                                                'email': str(student["Email"]).strip(),
+                                                'name': student["Name"],
+                                                'roll_no': student["Roll No"],
+                                                'status': 'absent'
+                                            })
+                                    
+                                    if attendance_records:
+                                        # Show email configuration status
+                                        from config import EMAIL_ENABLED, SMTP_SERVER, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, EMAIL_FROM
+                                        
+                                        config_status = []
+                                        config_status.append(f"**Email Configuration:**")
+                                        config_status.append(f"- Enabled: {EMAIL_ENABLED}")
+                                        config_status.append(f"- SMTP Server: {SMTP_SERVER}:{SMTP_PORT}")
+                                        config_status.append(f"- From Address: {EMAIL_FROM}")
+                                        config_status.append(f"- Username: {SMTP_USERNAME if SMTP_USERNAME else 'NOT SET'}")
+                                        config_status.append(f"- Password: {'SET' if SMTP_PASSWORD else 'NOT SET'}")
+                                        
+                                        with st.expander("📧 Email Configuration Status", expanded=False):
+                                            st.markdown("\n".join(config_status))
+                                        
+                                        with st.spinner(f"Sending email notifications to {len(attendance_records)} absent students..."):
+                                            # Get period from attendance data
+                                            # Period is now included in attendance_data (index 5)
+                                            # The database query now returns the most common period for absent students
+                                            period = "N/A"
+                                            if attendance_data and len(attendance_data) > 0:
+                                                try:
+                                                    # Get period from any record (present students have actual periods)
+                                                    # The database query fills in the most common period for absent students
+                                                    for record in attendance_data:
+                                                        if len(record) > 5 and record[5] and record[5] != "N/A" and record[5] != "None":
+                                                            period = record[5]
+                                                            logger.info(f"Using period from attendance data: {period}")
+                                                            break
+                                                    
+                                                    # If still N/A, try to get from present students
+                                                    if period == "N/A":
+                                                        for record in attendance_data:
+                                                            if len(record) > 4 and record[4] == "present" and len(record) > 5:
+                                                                if record[5] and record[5] != "N/A" and record[5] != "None":
+                                                                    period = record[5]
+                                                                    logger.info(f"Using period from present student record: {period}")
+                                                                    break
+                                                except Exception as e:
+                                                    logger.warning(f"Error extracting period: {str(e)}")
+                                                    period = "N/A"
+                                            
+                                            if period == "N/A":
+                                                logger.warning(f"Could not determine period for date {report_date}. Using 'N/A'")
+                                            
+                                            logger.info(f"Starting bulk email send for {len(attendance_records)} students")
+                                            results = send_bulk_attendance_emails(
+                                                attendance_records=attendance_records,
+                                                subject_name=selected_subject,
+                                                date=report_date.strftime("%Y-%m-%d"),
+                                                period=period
+                                            )
+                                            
+                                            # Display detailed results
+                                            if results['sent'] > 0:
+                                                st.success(f"✅ Successfully sent {results['sent']} email notification(s) to absent students")
+                                            
+                                            if results['failed'] > 0:
+                                                st.error(f"❌ Failed to send {results['failed']} email(s).")
+                                                
+                                                # Show details if available
+                                                if 'details' in results:
+                                                    failed_details = [d for d in results['details'] if d['status'] == 'failed']
+                                                    if failed_details:
+                                                        with st.expander("❌ Failed Email Details", expanded=True):
+                                                            for detail in failed_details:
+                                                                st.write(f"- {detail['name']} ({detail['email']})")
+                                                
+                                                st.warning("⚠️ Check the application logs (app.log) for detailed error messages.")
+                                                st.info("💡 **Troubleshooting:** Check your SMTP credentials, server settings, and network connectivity.")
+                                            
+                                            if results['sent'] == 0 and results['failed'] == 0:
+                                                st.warning("⚠️ No emails were sent. Please check email configuration.")
+                                            
+                                            # Show log file location
+                                            st.info(f"📋 **View detailed logs:** Check `app.log` file in the project directory for complete email sending logs.")
+                                    else:
+                                        st.warning("No valid email addresses found for absent students.")
+                            except ImportError as e:
+                                st.error(f"Email utilities not available: {str(e)}")
+                                logger.error(f"Error importing email utilities: {str(e)}")
+                            except Exception as e:
+                                st.error(f"Error sending email notifications: {str(e)}")
+                                logger.error(f"Error sending email notifications: {str(e)}\n{traceback.format_exc()}")
                     except Exception as df_error:
                         logger.error(f"Error processing attendance data: {str(df_error)}")
                         st.error(f"Error processing attendance data: {str(df_error)}")
@@ -1348,213 +2158,209 @@ elif page == "Attendance Reports":
                     st.info(f"No attendance records found for {selected_subject} on {report_date}")
         else:
             st.warning("No subjects found in database. Please check database configuration.")
-    except Exception as e:
-        logger.error(f"Error loading attendance report page: {str(e)}")
-        st.error(f"Error: {str(e)}")
 
 elif page == "Recognition Stats":
-    st.title("👁️ Facial Recognition Analytics")
-    
-    st.write("""
-    This page provides detailed analytics about the facial recognition system performance.
-    View statistics on recognition accuracy, processing times, and system performance.
-    """)
-    
-    # Get latest stats if available
-    if 'recognition_stats' in st.session_state:
-        stats = st.session_state.recognition_stats
-        
-        st.subheader("Overall System Performance")
-        
-        # Display metrics in a nice layout
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Avg. Processing Time", f"{stats.get('avg_processing_time', 0):.2f} sec")
-        with col2:
-            st.metric("Recognition Rate", f"{stats.get('recognition_rate', 0):.1f}%")
-        with col3:
-            st.metric("Avg. Confidence", f"{stats.get('avg_confidence', 0):.2f}")
-        with col4:
-            st.metric("Total Sessions", str(stats.get('total_sessions', 0)))
-        
-        # Display historical data if available
-        if 'history' in stats and len(stats['history']) > 0:
-            st.subheader("Historical Performance")
-            
-            # Create DataFrame from history
-            history_df = pd.DataFrame(stats['history'])
-            
-            # Display line charts
-            if 'recognition_rate' in history_df.columns:
-                st.line_chart(history_df[['recognition_rate']])
-            if 'processing_time' in history_df.columns:
-                st.line_chart(history_df[['processing_time']])
-            
-        # Display most recent recognition details
-        if 'last_session' in stats:
-            last = stats['last_session']
-            st.subheader("Last Recognition Session")
-            
-            st.write(f"Date/Time: {last.get('datetime', 'Unknown')}")
-            st.write(f"Subject: {last.get('subject', 'Unknown')}")
-            st.write(f"Period: {last.get('period', 'Unknown')}")
-            
-            # Display recognized vs. not recognized
-            recognized = last.get('recognized_count', 0)
-            not_recognized = last.get('total_faces', 0) - recognized
-            
-            chart_data = pd.DataFrame({
-                'Status': ['Recognized', 'Not Recognized'],
-                'Count': [recognized, not_recognized]
-            })
-            if recognized > 0 or not_recognized > 0:
-                st.bar_chart(chart_data.set_index('Status'))
-        
-        # Add detailed accuracy metrics section
-        st.subheader("Detailed Accuracy Metrics")
-        
-        tabs = st.tabs(["Confusion Matrix", "Precision & Recall", "Accuracy Over Time"])
-        
-        with tabs[0]:
-            # Confusion Matrix visualization
-            st.write("Confusion Matrix")
-            if 'confusion_matrix' in stats:
-                cm = stats['confusion_matrix']
-                
-                try:
-                    # Create a basic confusion matrix visualization
-                    cm_data = np.array([[cm.get('TP', 0), cm.get('FP', 0)], 
-                                      [cm.get('FN', 0), cm.get('TN', 0)]])
-                    
-                    fig, ax = plt.subplots(figsize=(6, 5))
-                    sns.heatmap(cm_data, annot=True, fmt='d', cmap='Blues',
-                              xticklabels=['Present', 'Absent'],
-                              yticklabels=['Present', 'Absent'])
-                    plt.ylabel('Actual')
-                    plt.xlabel('Predicted')
-                    st.pyplot(fig)
-                except Exception as e:
-                    logger.error(f"Error creating confusion matrix visualization: {str(e)}")
-                    st.error("Could not create confusion matrix visualization. Make sure matplotlib and seaborn are installed.")
-                    
-                    # Fallback to text display
-                    st.write("Confusion Matrix Data:")
-                    st.write(f"True Positives: {cm.get('TP', 0)}")
-                    st.write(f"False Positives: {cm.get('FP', 0)}")
-                    st.write(f"False Negatives: {cm.get('FN', 0)}")
-                    st.write(f"True Negatives: {cm.get('TN', 0)}")
-            else:
-                # Create placeholder matrix with sample data
-                tp = stats.get('total_students_recognized', 0)
-                fn = stats.get('total_faces_detected', 0) - tp
-                
-                cm_data = pd.DataFrame({
-                    '': ['Actual Present', 'Actual Absent'],
-                    'Predicted Present': [tp, 0],  # We don't track false positives yet
-                    'Predicted Absent': [fn, 0]    # We don't track true negatives yet
-                })
-                
-                st.write("Detected Faces vs. Recognized Students:")
-                st.dataframe(cm_data.set_index(''))
-                st.info("Note: Complete confusion matrix tracking requires manual verification of results.")
-        
-        with tabs[1]:
-            # Calculate precision and recall if we have enough data
-            if stats.get('total_students_recognized', 0) > 0:
-                # Simplified calculation based on available data
-                precision = 1.0  # Assuming all recognitions are correct
-                recall = (stats.get('total_students_recognized', 0) / 
-                         stats.get('total_faces_detected', 0) if stats.get('total_faces_detected', 0) > 0 else 0)
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric("Precision", f"{precision:.2f}")
-                    st.caption("Correctly identified / Total identified")
-                with col2:
-                    st.metric("Recall", f"{recall:.2f}")
-                    st.caption("Correctly identified / Total actual faces")
-                
-                # F1 Score
-                if precision + recall > 0:
-                    f1 = 2 * precision * recall / (precision + recall)
-                    st.metric("F1 Score", f"{f1:.2f}")
-            else:
-                st.info("Not enough data to calculate precision and recall metrics.")
-        
-        with tabs[2]:
-            # Display accuracy over time if we have history
-            if 'history' in stats and len(stats['history']) > 0:
-                history_df = pd.DataFrame(stats['history'])
-                if 'datetime' in history_df and 'recognition_rate' in history_df:
-                    try:
-                        history_df['datetime'] = pd.to_datetime(history_df['datetime'])
-                        
-                        # Plot accuracy over time
-                        fig, ax = plt.subplots(figsize=(10, 5))
-                        ax.plot(history_df['datetime'], history_df['recognition_rate'], 'o-', linewidth=2)
-                        ax.set_xlabel('Date/Time')
-                        ax.set_ylabel('Recognition Rate (%)')
-                        ax.set_title('Face Recognition Accuracy Over Time')
-                        ax.grid(True)
-                        
-                        if len(history_df) > 5:
-                            plt.xticks(rotation=45)
-                        
-                        st.pyplot(fig)
-                    except Exception as e:
-                        logger.error(f"Error creating accuracy over time plot: {str(e)}")
-                        st.error("Could not create accuracy plot. Using simplified view instead.")
-                        
-                        # Fallback to simpler visualization
-                        st.write("Recognition Rate Over Time:")
-                        if 'datetime' in history_df.columns and 'recognition_rate' in history_df.columns:
-                            simple_df = history_df[['datetime', 'recognition_rate']].copy()
-                            simple_df['datetime'] = simple_df['datetime'].astype(str)
-                            simple_df = simple_df.set_index('datetime')
-                            st.line_chart(simple_df)
-                else:
-                    st.info("Not enough historical data with timestamps to plot accuracy over time.")
-            else:
-                st.info("No historical data available to show accuracy trends.")
+    # Check permission
+    if not can_access_feature(user, 'view_analytics'):
+        st.error("❌ Access Denied: You do not have permission to view recognition statistics.")
     else:
-        st.info("No recognition statistics available yet. Process attendance first to generate statistics.")
-        
-        # Show sample data to demonstrate the feature
-        st.subheader("Sample Statistics (Demo)")
-        
-        # Create sample metrics
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Avg. Processing Time", "1.25 sec")
-        with col2:
-            st.metric("Recognition Rate", "85.0%")
-        with col3:
-            st.metric("Avg. Confidence", "0.78")
-        with col4:
-            st.metric("Total Sessions", "0")
-            
-        st.caption("This is a demonstration of how the statistics will appear after processing attendance.")
-        
-        # Add instructions
-        st.markdown("""
-        ### How to generate recognition statistics:
-        1. Go to the **Take Attendance** page
-        2. Upload a classroom image or capture from camera
-        3. Click **Analyze Image** to process the attendance
-        4. The statistics will be automatically saved and displayed here
+        st.title("👁️ Facial Recognition Analytics")
+        try:
+            pass
+        except Exception as e:
+            logger.error(f"Error loading recognition stats page: {str(e)}")
+            st.error(f"Error: {str(e)}")
+        st.write("""
+        This page provides detailed analytics about the facial recognition system performance.
+        View statistics on recognition accuracy, processing times, and system performance.
         """)
         
-        # Add sample chart
-        st.subheader("Sample Recognition Rate Chart (Demo)")
-        sample_data = pd.DataFrame({
-            'date': pd.date_range(start='2023-01-01', periods=5),
-            'rate': [75, 82, 78, 88, 85]
-        }).set_index('date')
-        st.line_chart(sample_data)
+        # Get latest stats if available
+        if 'recognition_stats' in st.session_state:
+            stats = st.session_state.recognition_stats
+            
+            st.subheader("Overall System Performance")
+            
+            # Display metrics in a nice layout
+            col1, col2, col3, col4 = st.columns(4)
+            
+            st.subheader("Overall System Performance")
+            
+            # Display metrics in a nice layout
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("Avg. Processing Time", f"{stats.get('avg_processing_time', 0):.2f} sec")
+            with col2:
+                st.metric("Recognition Rate", f"{stats.get('recognition_rate', 0):.1f}%")
+            with col3:
+                st.metric("Avg. Confidence", f"{stats.get('avg_confidence', 0):.2f}")
+            with col4:
+                st.metric("Total Sessions", str(stats.get('total_sessions', 0)))
+            
+            # Display historical data if available
+            if 'history' in stats and len(stats['history']) > 0:
+                st.subheader("Historical Performance")
+                
+                # Create DataFrame from history
+                history_df = pd.DataFrame(stats['history'])
+                
+                # Display line charts
+                if 'recognition_rate' in history_df.columns:
+                    st.line_chart(history_df[['recognition_rate']])
+                if 'processing_time' in history_df.columns:
+                    st.line_chart(history_df[['processing_time']])
+            
+            # Display most recent recognition details
+            if 'last_session' in stats:
+                last = stats['last_session']
+                st.subheader("Last Recognition Session")
+                
+                st.write(f"Date/Time: {last.get('datetime', 'Unknown')}")
+                st.write(f"Subject: {last.get('subject', 'Unknown')}")
+                st.write(f"Period: {last.get('period', 'Unknown')}")
+                
+                # Display recognized vs. not recognized
+                recognized = last.get('recognized_count', 0)
+                not_recognized = last.get('total_faces', 0) - recognized
+                
+                chart_data = pd.DataFrame({
+                    'Status': ['Recognized', 'Not Recognized'],
+                    'Count': [recognized, not_recognized]
+                })
+                if recognized > 0 or not_recognized > 0:
+                    st.bar_chart(chart_data.set_index('Status'))
+            
+            # Add detailed accuracy metrics section
+            st.subheader("Detailed Accuracy Metrics")
+            
+            tabs = st.tabs(["Confusion Matrix", "Precision & Recall", "Accuracy Over Time"])
+            
+            with tabs[0]:
+                # Confusion Matrix visualization
+                st.write("Confusion Matrix")
+                if 'confusion_matrix' in stats:
+                    cm = stats['confusion_matrix']
+                    
+                    try:
+                        # Create a basic confusion matrix visualization
+                        cm_data = np.array([[cm.get('TP', 0), cm.get('FP', 0)], 
+                                          [cm.get('FN', 0), cm.get('TN', 0)]])
+                        
+                        fig, ax = plt.subplots(figsize=(6, 5))
+                        sns.heatmap(cm_data, annot=True, fmt='d', cmap='Blues',
+                                  xticklabels=['Present', 'Absent'],
+                                  yticklabels=['Present', 'Absent'])
+                        plt.ylabel('Actual')
+                        plt.xlabel('Predicted')
+                        st.pyplot(fig)
+                    except Exception as e:
+                        logger.error(f"Error creating confusion matrix visualization: {str(e)}")
+                        st.error("Could not create confusion matrix visualization. Make sure matplotlib and seaborn are installed.")
+                        
+                        # Fallback to text display
+                        st.write("Confusion Matrix Data:")
+                        st.write(f"True Positives: {cm.get('TP', 0)}")
+                        st.write(f"False Positives: {cm.get('FP', 0)}")
+                        st.write(f"False Negatives: {cm.get('FN', 0)}")
+                        st.write(f"True Negatives: {cm.get('TN', 0)}")
+                else:
+                    # Create placeholder matrix with sample data
+                    tp = stats.get('total_students_recognized', 0)
+                    fn = stats.get('total_faces_detected', 0) - tp
+                    
+                    cm_data = pd.DataFrame({
+                        '': ['Actual Present', 'Actual Absent'],
+                        'Predicted Present': [tp, 0],  # We don't track false positives yet
+                        'Predicted Absent': [fn, 0]    # We don't track true negatives yet
+                    })
+                    
+                    st.write("Detected Faces vs. Recognized Students:")
+                    st.dataframe(cm_data.set_index(''))
+                    st.info("Note: Complete confusion matrix tracking requires manual verification of results.")
+            
+            with tabs[1]:
+                # Calculate precision and recall if we have enough data
+                if stats.get('total_students_recognized', 0) > 0:
+                    # Simplified calculation based on available data
+                    precision = 1.0  # Assuming all recognitions are correct
+                    recall = (stats.get('total_students_recognized', 0) / 
+                             stats.get('total_faces_detected', 0) if stats.get('total_faces_detected', 0) > 0 else 0)
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("Precision", f"{precision:.2f}")
+                        st.caption("Correctly identified / Total identified")
+                    with col2:
+                        st.metric("Recall", f"{recall:.2f}")
+                        st.caption("Correctly identified / Total actual faces")
+                    
+                    # F1 Score
+                    if precision + recall > 0:
+                        f1 = 2 * precision * recall / (precision + recall)
+                        st.metric("F1 Score", f"{f1:.2f}")
+                else:
+                    st.info("Not enough data to calculate precision and recall metrics.")
+            
+            with tabs[2]:
+                # Display accuracy over time if we have history
+                if 'history' in stats and len(stats['history']) > 0:
+                    history_df = pd.DataFrame(stats['history'])
+                    if 'datetime' in history_df and 'recognition_rate' in history_df:
+                        try:
+                            history_df['datetime'] = pd.to_datetime(history_df['datetime'])
+                            
+                            # Plot accuracy over time
+                            fig, ax = plt.subplots(figsize=(10, 5))
+                            ax.plot(history_df['datetime'], history_df['recognition_rate'], 'o-', linewidth=2)
+                            ax.set_xlabel('Date/Time')
+                            ax.set_ylabel('Recognition Rate (%)')
+                            ax.set_title('Face Recognition Accuracy Over Time')
+                            ax.grid(True)
+                            
+                            if len(history_df) > 5:
+                                plt.xticks(rotation=45)
+                            
+                            st.pyplot(fig)
+                        except Exception as e:
+                            logger.error(f"Error creating accuracy over time plot: {str(e)}")
+                            st.error("Could not create accuracy plot. Using simplified view instead.")
+                            
+                            # Fallback to simpler visualization
+                            st.write("Recognition Rate Over Time:")
+                            if 'datetime' in history_df.columns and 'recognition_rate' in history_df.columns:
+                                simple_df = history_df[['datetime', 'recognition_rate']].copy()
+                                simple_df['datetime'] = simple_df['datetime'].astype(str)
+                                simple_df = simple_df.set_index('datetime')
+                                st.line_chart(simple_df)
+                    else:
+                        st.info("Not enough historical data with timestamps to plot accuracy over time.")
+                else:
+                    st.info("No historical data available to show accuracy trends.")
+
+            # Add instructions
+            st.markdown("""
+            ### How to generate recognition statistics:
+            1. Go to the **Take Attendance** page
+            2. Upload a classroom image or capture from camera
+            3. Click **Analyze Image** to process the attendance
+            4. The statistics will be automatically saved and displayed here
+            """)
+            
+            # Add sample chart
+            st.subheader("Sample Recognition Rate Chart (Demo)")
+            sample_data = pd.DataFrame({
+                'date': pd.date_range(start='2023-01-01', periods=5),
+                'rate': [75, 82, 78, 88, 85]
+            }).set_index('date')
+            st.line_chart(sample_data)
 
 elif page == "Class Reports":
-    st.title("🏫 Class-wise Attendance Reports")
+    # Check permission
+    if not can_access_feature(user, 'view_class_reports'):
+        st.error("❌ Access Denied: You do not have permission to view class reports.")
+    else:
+        st.title("🏫 Class-wise Attendance Reports")
     st.markdown('<div class="dashboard-card"><p>View attendance statistics for the entire class across all subjects.</p></div>', unsafe_allow_html=True)
     
     try:
@@ -1768,6 +2574,9 @@ elif page == "Class Reports":
                                     # Export to Excel
                                     excel_path = os.path.join("excel_exports", f"{subject_name}_{department}_{year}{division}.xlsx")
                                     
+                                    # Track the final dataframe for Google Sheets export
+                                    final_df_for_sheets = subject_df
+                                    
                                     # Auto-update Excel file
                                     try:
                                         # First, check if the file exists and try to read it
@@ -1798,14 +2607,17 @@ elif page == "Class Reports":
                                                 
                                                 # Save updated Excel file
                                                 existing_df.to_excel(excel_path, index=False)
+                                                final_df_for_sheets = existing_df
                                                 st.success(f"Automatically updated {subject_name} Excel file with new attendance data.")
                                                 print(f"DEBUG: Excel write successful")
                                             except Exception as e:
                                                 # If reading fails, just write a new file
                                                 logger.error(f"Error reading existing Excel file: {str(e)}")
+                                                final_df_for_sheets = subject_df
                                                 subject_df.to_excel(excel_path, index=False)
                                         else:
                                             # Create new Excel file
+                                            final_df_for_sheets = subject_df
                                             subject_df.to_excel(excel_path, index=False)
                                             
                                         # Provide download button
@@ -1817,6 +2629,22 @@ elif page == "Class Reports":
                                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                                 key=f"download_{subject_name}"
                                             )
+                                        
+                                        # Export to Google Sheets in parallel
+                                        if sheets_available:
+                                            try:
+                                                if update_attendance_sheet(final_df_for_sheets, subject_name):
+                                                    sheets_info = get_spreadsheet_info()
+                                                    if sheets_info and sheets_info.get('url'):
+                                                        st.success(f"✅ {subject_name} attendance data exported to Google Sheets")
+                                                        st.info(f"📊 [Open Google Sheet]({sheets_info['url']})")
+                                                    else:
+                                                        st.success(f"✅ {subject_name} attendance data also exported to Google Sheets")
+                                                else:
+                                                    logger.warning(f"Google Sheets export failed for {subject_name}, but Excel export succeeded")
+                                            except Exception as sheets_error:
+                                                logger.error(f"Error exporting {subject_name} to Google Sheets: {str(sheets_error)}")
+                                                # Don't show error to user if Excel succeeded - Sheets is optional
                                     except Exception as excel_error:
                                         logger.error(f"Error with Excel operations: {str(excel_error)}")
                                         st.error(f"Error creating/updating Excel file: {str(excel_error)}")
@@ -1833,6 +2661,22 @@ elif page == "Class Reports":
                     with pd.ExcelWriter(excel_path, mode='w') as writer:
                         df_summary.to_excel(writer, index=False)
                     st.success(f"Class report saved to {excel_path}")
+                    
+                    # Export to Google Sheets in parallel
+                    if sheets_available:
+                        try:
+                            worksheet_name = f"Class_Report_{date_from}_to_{date_to}"
+                            if export_to_sheets(df_summary, worksheet_name):
+                                sheets_info = get_spreadsheet_info()
+                                if sheets_info and sheets_info.get('url'):
+                                    st.success(f"✅ Class report exported to Google Sheets")
+                                    st.info(f"📊 [Open Google Sheet]({sheets_info['url']})")
+                                else:
+                                    st.success(f"✅ Class report also exported to Google Sheets")
+                            else:
+                                logger.warning("Google Sheets export failed for class report, but Excel export succeeded")
+                        except Exception as sheets_error:
+                            logger.error(f"Error exporting class report to Google Sheets: {str(sheets_error)}")
                 except Exception as e:
                     logger.error(f"Error exporting class report to Excel: {str(e)}")
                     st.error(f"Failed to export class report: {str(e)}")
@@ -2132,6 +2976,22 @@ elif page == "Student Reports":
                                             file_name=f"Attendance_Report_{selected_roll_no}.xlsx",
                                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                                         )
+                                    
+                                    # Export to Google Sheets in parallel
+                                    if sheets_available:
+                                        try:
+                                            worksheet_name = f"Student_Report_{selected_roll_no}"
+                                            if export_to_sheets(df_report, worksheet_name):
+                                                sheets_info = get_spreadsheet_info()
+                                                if sheets_info and sheets_info.get('url'):
+                                                    st.success(f"✅ Student report exported to Google Sheets")
+                                                    st.info(f"📊 [Open Google Sheet]({sheets_info['url']})")
+                                                else:
+                                                    st.success(f"✅ Student report also exported to Google Sheets")
+                                            else:
+                                                logger.warning(f"Google Sheets export failed for student {selected_roll_no}, but Excel export succeeded")
+                                        except Exception as sheets_error:
+                                            logger.error(f"Error exporting student report to Google Sheets: {str(sheets_error)}")
                                 except Exception as e:
                                     logger.error(f"Error exporting student report to Excel: {str(e)}")
                                     st.error(f"Failed to export report: {str(e)}")
@@ -2152,7 +3012,12 @@ elif page == "Student Reports":
         st.error(f"Error: {str(e)}")
 
 elif page == "Edit Attendance":
-    st.title("🔄 Edit Attendance")
+    # Check permission
+    if not can_access_feature(user, 'edit_attendance'):
+        st.error("❌ Access Denied: You do not have permission to edit attendance.")
+        st.info("Only HOD and Class Teachers can edit attendance records.")
+    else:
+        st.title("🔄 Edit Attendance")
     st.markdown('<div class="dashboard-card"><p>View and edit previous attendance records.</p></div>', unsafe_allow_html=True)
     
     # Create columns for form inputs
@@ -2241,55 +3106,32 @@ elif page == "Edit Attendance":
                     submit = st.form_submit_button("Update Attendance")
                     
                     if submit:
-                        conn = get_connection()
-                        cursor = conn.cursor()
-                        
                         try:
                             update_count = 0
                             
                             for student_id, is_present in attendance_status.items():
                                 status = "present" if is_present else "absent"
                                 
-                                # Check if we need to update or insert
-                                cursor.execute('''
-                                    SELECT id FROM attendance 
-                                    WHERE student_id = ? AND subject_id = ? AND date = ? AND period = ?
-                                ''', (student_id, subject_id, report_date.strftime("%Y-%m-%d"), selected_period))
+                                # Use mark_attendance function which handles email sending
+                                success = mark_attendance(
+                                    student_id, 
+                                    subject_id, 
+                                    report_date.strftime("%Y-%m-%d"), 
+                                    selected_period,
+                                    status=status
+                                )
                                 
-                                existing = cursor.fetchone()
-                                
-                                if existing:
-                                    # Update existing record
-                                    cursor.execute('''
-                                        UPDATE attendance
-                                        SET status = ?
-                                        WHERE student_id = ? AND subject_id = ? AND date = ? AND period = ?
-                                    ''', (status, student_id, subject_id, report_date.strftime("%Y-%m-%d"), selected_period))
-                                    
-                                    if cursor.rowcount > 0:
-                                        update_count += 1
-                                else:
-                                    # Insert new record
-                                    cursor.execute('''
-                                        INSERT INTO attendance (student_id, subject_id, date, period, status)
-                                        VALUES (?, ?, ?, ?, ?)
-                                    ''', (student_id, subject_id, report_date.strftime("%Y-%m-%d"), selected_period, status))
-                                    
-                                    if cursor.rowcount > 0:
-                                        update_count += 1
+                                if success:
+                                    update_count += 1
                             
-                            conn.commit()
-                            st.success(f"Successfully updated attendance for {update_count} students!")
+                            st.success(f"Successfully updated attendance for {update_count} students! Emails have been sent to students.")
                             
                             # Add button to refresh the page
                             st.button("Refresh", key="refresh_attendance")
                             
                         except Exception as e:
-                            conn.rollback()
                             logger.error(f"Error updating attendance: {str(e)}")
                             st.error(f"Failed to update attendance: {str(e)}")
-                        finally:
-                            conn.close()
                 
             else:
                 st.info(f"No attendance records found for {selected_subject} on {report_date}. You can create a new attendance record.")
@@ -2345,6 +3187,163 @@ elif page == "Edit Attendance":
     except Exception as e:
         logger.error(f"Error in Edit Attendance page: {str(e)}\n{traceback.format_exc()}")
         st.error(f"Error: {str(e)}")
+
+elif page == "Email Settings":
+    # Check permission - Only HOD can access
+    if not can_access_feature(user, 'manage_users'):
+        st.error("❌ Access Denied: You do not have permission to access Email Settings.")
+        st.info("Only HOD can configure email settings.")
+    else:
+        st.title("📧 Email Settings")
+        st.markdown('<div class="dashboard-card"><p>Configure email notifications for attendance marking.</p></div>', unsafe_allow_html=True)
+        
+        try:
+            from utils.email_utils import test_email_configuration
+            from config import (
+                EMAIL_ENABLED,
+                SMTP_SERVER,
+                SMTP_PORT,
+                SMTP_USERNAME,
+                SMTP_PASSWORD,
+                EMAIL_FROM,
+                EMAIL_SEND_ON_PRESENT,
+                EMAIL_SEND_ON_ABSENT
+            )
+            
+            st.markdown("### Email Configuration")
+            st.info("⚠️ **Note:** Email settings are configured via environment variables. To change these settings, update your environment variables or modify the `config.py` file and restart the application.")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("#### Current Settings")
+                st.write(f"**Email Enabled:** {'✅ Yes' if EMAIL_ENABLED else '❌ No'}")
+                st.write(f"**SMTP Server:** {SMTP_SERVER}")
+                st.write(f"**SMTP Port:** {SMTP_PORT}")
+                st.write(f"**From Address:** {EMAIL_FROM}")
+                st.write(f"**Send on Present:** {'✅ Yes' if EMAIL_SEND_ON_PRESENT else '❌ No'}")
+                st.write(f"**Send on Absent:** {'✅ Yes' if EMAIL_SEND_ON_ABSENT else '❌ No'}")
+                
+                if SMTP_USERNAME:
+                    st.write(f"**SMTP Username:** {SMTP_USERNAME[:3]}***")
+                else:
+                    st.warning("⚠️ SMTP Username not configured")
+                
+                if SMTP_PASSWORD:
+                    st.write("**SMTP Password:** ********")
+                else:
+                    st.warning("⚠️ SMTP Password not configured")
+            
+            with col2:
+                st.markdown("#### Test Email Configuration")
+                st.write("Click the button below to test your email configuration:")
+                
+                if st.button("🧪 Test Email Connection", use_container_width=True):
+                    with st.spinner("Testing email configuration..."):
+                        success, message = test_email_configuration()
+                        if success:
+                            st.success(f"✅ {message}")
+                        else:
+                            st.error(f"❌ {message}")
+                
+                st.markdown("---")
+                st.markdown("#### Email Notification Settings")
+                st.info("""
+                **How Email Notifications Work:**
+                - When attendance is marked (present or absent), an email is automatically sent to the student
+                - Emails include: Subject name, Date, Period, Roll Number, and Status
+                - Students receive a nicely formatted HTML email with their attendance status
+                - Email sending failures won't prevent attendance from being saved
+                """)
+                
+                st.markdown("---")
+                st.markdown("#### 📋 Recent Email Logs")
+                
+                # Function to read recent email logs
+                try:
+                    log_file_path = "app.log"
+                    if os.path.exists(log_file_path):
+                        with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            lines = f.readlines()
+                        
+                        # Filter email-related logs (last 50 lines that contain email keywords)
+                        email_logs = []
+                        keywords = ['email', 'SMTP', 'smtp', 'Email', 'attendance notification']
+                        for line in lines[-200:]:  # Check last 200 lines
+                            if any(keyword in line for keyword in keywords):
+                                email_logs.append(line.strip())
+                        
+                        if email_logs:
+                            # Show last 30 email-related log entries
+                            recent_logs = email_logs[-30:]
+                            with st.expander(f"View Recent Email Logs ({len(recent_logs)} entries)", expanded=False):
+                                st.code("\n".join(recent_logs), language=None)
+                            
+                            # Count success vs failures
+                            success_count = sum(1 for log in recent_logs if '✅' in log or 'successfully' in log.lower())
+                            error_count = sum(1 for log in recent_logs if '❌' in log or 'error' in log.lower() or 'failed' in log.lower())
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.metric("Recent Successes", success_count)
+                            with col2:
+                                st.metric("Recent Errors", error_count)
+                        else:
+                            st.info("No email-related logs found in recent entries.")
+                            st.info("📝 **Tip:** Try sending a test email or marking attendance to generate logs.")
+                    else:
+                        st.warning(f"Log file not found at: {log_file_path}")
+                        st.info("Logs will appear here once email operations are performed.")
+                except Exception as e:
+                    st.error(f"Error reading logs: {str(e)}")
+                    logger.error(f"Error reading email logs: {str(e)}")
+                
+                st.markdown("---")
+                st.markdown("#### Configuration Instructions")
+                st.markdown("""
+                To configure email settings, set these environment variables:
+                - `EMAIL_ENABLED=true` - Enable email notifications
+                - `SMTP_SERVER=smtp.gmail.com` - Your SMTP server
+                - `SMTP_PORT=587` - SMTP port (usually 587 for TLS)
+                - `SMTP_USERNAME=your-email@gmail.com` - Your email address
+                - `SMTP_PASSWORD=your-app-password` - Your email password or app password
+                - `EMAIL_FROM=attendance@example.com` - From address
+                - `EMAIL_SEND_ON_PRESENT=true` - Send email when marked present
+                - `EMAIL_SEND_ON_ABSENT=true` - Send email when marked absent
+                
+                **For Gmail:**
+                1. Enable 2-Factor Authentication
+                2. Generate an App Password: https://myaccount.google.com/apppasswords
+                3. Use the app password as `SMTP_PASSWORD`
+                
+                **For Resend:**
+                1. Sign up at https://resend.com
+                2. Get your API key (starts with `re_`)
+                3. **Verify your domain** in Resend dashboard (Settings → Domains)
+                4. Use these settings:
+                   - `SMTP_SERVER=smtp.resend.com`
+                   - `SMTP_PORT=465` (or 587)
+                   - `SMTP_USERNAME=resend`
+                   - `SMTP_PASSWORD=your-api-key-here` (the full API key starting with `re_`)
+                   - `EMAIL_FROM=your-verified-domain@yourdomain.com` (must use verified domain)
+                5. **Critical:** The `EMAIL_FROM` address must use a domain you've verified in Resend
+                   - ❌ Cannot use: `attendance@gmail.com` or `attendance@outlook.com`
+                   - ✅ Must use: `attendance@yourdomain.com` (where yourdomain.com is verified)
+                
+                **Troubleshooting Resend Authentication Errors:**
+                - ✅ Verify your API key is correct and active in Resend dashboard
+                - ✅ Check that your domain is verified (Settings → Domains → Status should be "Verified")
+                - ✅ Ensure `EMAIL_FROM` uses your verified domain (not Gmail/Outlook)
+                - ✅ Check Resend dashboard for any API key restrictions or rate limits
+                - ✅ Verify DNS records (SPF, DKIM) are properly configured for your domain
+                """)
+                
+        except ImportError as e:
+            st.error(f"Error importing email utilities: {str(e)}")
+            logger.error(f"Error importing email utilities: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error in Email Settings page: {str(e)}\n{traceback.format_exc()}")
+            st.error(f"Error: {str(e)}")
 
 # Footer
 st.sidebar.divider()
