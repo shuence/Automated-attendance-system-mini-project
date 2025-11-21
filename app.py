@@ -547,7 +547,37 @@ if page == "Teacher Dashboard":
         all_students = get_all_students()
         
         if not all_students:
-            st.warning("No students registered yet. Use the Student Registration page to add students.")
+            st.warning("⚠️ No students registered yet.")
+            st.info("""
+            **Get Started:**
+            1. Click **👤 Student Registration** in the sidebar
+            2. Add students with their photos and details
+            3. Students will be automatically enrolled in all subjects
+            
+            **Database Check:**
+            - Database location: `db/attendance.db`
+            - If this is a fresh installation, the database will be created automatically
+            - Check application logs if you encounter issues
+            """)
+            
+            # Show database status
+            try:
+                from utils.db_utils import check_database_status
+                db_status = check_database_status()
+                
+                with st.expander("🔍 Database Diagnostic Information", expanded=False):
+                    st.write(f"**Database Path:** `{db_status['database_path']}`")
+                    st.write(f"**Database Exists:** {'✅ Yes' if db_status['database_exists'] else '❌ No'}")
+                    st.write(f"**Tables Exist:** {'✅ Yes' if db_status['tables_exist'] else '❌ No'}")
+                    if db_status['tables_exist']:
+                        st.write(f"**Tables:** {', '.join(db_status.get('tables', []))}")
+                    st.write(f"**Students Count:** {db_status['students_count']}")
+                    st.write(f"**Subjects Count:** {db_status['subjects_count']}")
+                    st.write(f"**Attendance Records:** {db_status['attendance_count']}")
+                    if db_status.get('error'):
+                        st.error(f"**Error:** {db_status['error']}")
+            except Exception as e:
+                logger.error(f"Error checking database status: {str(e)}")
         else:
             # Convert to DataFrame for display
             students_df = pd.DataFrame([
@@ -1117,7 +1147,18 @@ elif page == "Enroll All Students":
             all_subjects = get_subjects()
             
             if not all_students:
-                st.warning("No students found in the database.")
+                st.warning("⚠️ No students found in the database.")
+                st.info("""
+                **To add students:**
+                1. Go to **👤 Student Registration** page in the sidebar
+                2. Fill in student details and upload their photo
+                3. Students will be automatically enrolled in all subjects
+                
+                **Database Status:**
+                - Check if database is initialized properly
+                - Verify database file exists at: `db/attendance.db`
+                - Check application logs for database errors
+                """)
             elif not all_subjects:
                 st.warning("No subjects found in the database.")
             else:
@@ -1733,7 +1774,17 @@ elif page == "Take Attendance":
                     
                     # Check if we have students in database
                     if not all_students:
-                        st.warning("No students found in database. Please register students first.")
+                        st.error("❌ No students found in database.")
+                        st.info("""
+                        **To fix this:**
+                        1. Go to **👤 Student Registration** page to add students
+                        2. Make sure students are enrolled in the selected subject
+                        3. Check database connection in logs
+                        
+                        **Quick Check:**
+                        - Database file: `db/attendance.db`
+                        - Check if file exists and has proper permissions
+                        """)
                     else:
                         # Prepare parameters for DeepFace verification
                         # Handle both uploaded file objects and file paths
@@ -1944,36 +1995,50 @@ elif page == "Attendance Reports":
                     st.subheader(f"Attendance for {selected_subject} on {report_date}")
                     
                     try:
-                        # Create DataFrame for display
+                        # Create DataFrame for display with proper status icons
+                        # attendance_data format: (id, roll_no, name, email, status, period, not_marked)
+                        status_display = []
+                        for data in attendance_data:
+                            status = data[4] if len(data) > 4 else 'not_marked'
+                            if status == "present":
+                                status_display.append("✅ Present")
+                            elif status == "absent":
+                                status_display.append("❌ Absent")
+                            else:  # not_marked
+                                status_display.append("⏸️ Not Marked")
+                        
                         df = pd.DataFrame(
-                            [(data[1], data[2], data[3], "✅" if data[4] == "present" else "❌") for data in attendance_data],
+                            [(data[1], data[2], data[3], status_display[i]) for i, data in enumerate(attendance_data)],
                             columns=["Roll No", "Name", "Email", "Status"]
                         )
                         st.dataframe(df)
                         
                         # Calculate and display statistics
-                        present_count = df[df['Status'] == '✅'].shape[0]
-                        absent_count = df[df['Status'] == '❌'].shape[0]
-                        total_count = present_count + absent_count
+                        present_count = sum(1 for data in attendance_data if len(data) > 4 and data[4] == "present")
+                        absent_count = sum(1 for data in attendance_data if len(data) > 4 and data[4] == "absent")
+                        not_marked_count = sum(1 for data in attendance_data if len(data) > 4 and data[4] == "not_marked")
+                        total_count = len(attendance_data)
                         
                         # Display metrics
-                        col1, col2, col3, col4 = st.columns(4)
+                        col1, col2, col3, col4, col5 = st.columns(5)
                         with col1:
                             st.metric("Total Students", str(total_count))
                         with col2:
-                            st.metric("Present", str(present_count))
+                            st.metric("✅ Present", str(present_count))
                         with col3:
-                            st.metric("Absent", str(absent_count))
+                            st.metric("❌ Absent", str(absent_count))
                         with col4:
+                            st.metric("⏸️ Not Marked", str(not_marked_count))
+                        with col5:
                             attendance_percentage = (present_count / total_count * 100) if total_count > 0 else 0
                             st.metric("Attendance %", f"{attendance_percentage:.1f}%")
                         
                         # Show pie chart
                         chart_data = pd.DataFrame({
-                            'Status': ['Present', 'Absent'],
-                            'Count': [present_count, absent_count]
+                            'Status': ['Present', 'Absent', 'Not Marked'],
+                            'Count': [present_count, absent_count, not_marked_count]
                         })
-                        if present_count > 0 or absent_count > 0:
+                        if present_count > 0 or absent_count > 0 or not_marked_count > 0:
                             st.subheader("Attendance Visualization")
                             st.bar_chart(chart_data.set_index('Status'))
                         
@@ -1983,11 +2048,19 @@ elif page == "Attendance Reports":
                         # Create pivot table for Excel export
                         pivot_data = []
                         for data in attendance_data:
+                            status = data[4] if len(data) > 4 else 'not_marked'
+                            if status == "present":
+                                status_icon = "✅"
+                            elif status == "absent":
+                                status_icon = "❌"
+                            else:  # not_marked
+                                status_icon = "⏸️"
+                            
                             pivot_data.append({
                                 "Roll No": data[1],
                                 "Name": data[2],
                                 "Email": data[3],
-                                report_date.strftime("%Y-%m-%d"): "✅" if data[4] == "present" else "❌"
+                                report_date.strftime("%Y-%m-%d"): status_icon
                             })
                         
                         pivot_df = pd.DataFrame(pivot_data)
@@ -2070,9 +2143,10 @@ elif page == "Attendance Reports":
                             logger.error(f"Error exporting to Excel: {str(excel_error)}")
                             st.error(f"Error exporting to Excel: {str(excel_error)}")
                         
-                        # Option to notify absent students
-                        absent_students = df[df["Status"] == "❌"]
-                        if not absent_students.empty and st.button("Send Email Notifications to Absent Students"):
+                        # Option to notify absent students (both marked absent and not marked)
+                        # Filter for students who are either marked absent or not marked at all
+                        absent_students = df[df["Status"].str.contains("❌|⏸️", na=False)]
+                        if not absent_students.empty and st.button("Send Email Notifications to Absent/Not Marked Students"):
                             try:
                                 from utils.email_utils import send_bulk_attendance_emails
                                 from config import EMAIL_ENABLED
@@ -2084,11 +2158,18 @@ elif page == "Attendance Reports":
                                     attendance_records = []
                                     for _, student in absent_students.iterrows():
                                         if student["Email"] and pd.notna(student["Email"]) and str(student["Email"]).strip():
+                                            # Determine status from the Status column
+                                            status_text = student["Status"]
+                                            if "⏸️" in status_text or "Not Marked" in status_text:
+                                                email_status = 'not_marked'
+                                            else:
+                                                email_status = 'absent'
+                                            
                                             attendance_records.append({
                                                 'email': str(student["Email"]).strip(),
                                                 'name': student["Name"],
                                                 'roll_no': student["Roll No"],
-                                                'status': 'absent'
+                                                'status': email_status
                                             })
                                     
                                     if attendance_records:
@@ -2720,7 +2801,18 @@ elif page == "Student Reports":
         all_students = get_all_students()
         
         if not all_students:
-            st.warning("No students found in database. Please register students first.")
+            st.error("❌ No students found in database.")
+            st.info("""
+            **To add students:**
+            1. Navigate to **👤 Student Registration** page
+            2. Register students with their photos
+            3. Students will be automatically enrolled in subjects
+            
+            **Troubleshooting:**
+            - Check database file exists: `db/attendance.db`
+            - Verify database is initialized (check logs)
+            - Ensure you have proper permissions
+            """)
         else:
             # Convert to DataFrame for selection
             students_df = pd.DataFrame([

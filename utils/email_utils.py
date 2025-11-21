@@ -85,8 +85,15 @@ def send_attendance_email(
         logger.debug(f"Email subject: {msg['Subject']}")
         
         # Email body
-        status_text = "Present ✅" if status == "present" else "Absent ❌"
-        status_color = "#4caf50" if status == "present" else "#f44336"
+        if status == "present":
+            status_text = "Present ✅"
+            status_color = "#4caf50"
+        elif status == "not_marked":
+            status_text = "Not Marked ⏸️"
+            status_color = "#ff9800"
+        else:  # absent
+            status_text = "Absent ❌"
+            status_color = "#f44336"
         
         html_body = f"""
         <html>

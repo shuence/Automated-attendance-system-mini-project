@@ -292,31 +292,54 @@ def register_student(roll_no, name, department, year, division, image_path, subj
 
 def get_all_students():
     """Get all students from the database"""
-    conn = get_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-    SELECT id, roll_no, name, email, department, year, division, image_path
-    FROM students
-    ORDER BY roll_no
-    ''')
-    
-    # Convert to list of dictionaries
-    students = []
-    for row in cursor.fetchall():
-        students.append({
-            "id": row["id"],
-            "roll_no": row["roll_no"],
-            "name": row["name"],
-            "email": row["email"],
-            "department": row["department"],
-            "year": row["year"],
-            "division": row["division"],
-            "image_path": row["image_path"]
-        })
-    
-    conn.close()
-    return students
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # First check if students table exists
+        cursor.execute('''
+        SELECT name FROM sqlite_master 
+        WHERE type='table' AND name='students'
+        ''')
+        table_exists = cursor.fetchone()
+        
+        if not table_exists:
+            logger.error("Students table does not exist in database. Database may not be initialized.")
+            conn.close()
+            return []
+        
+        cursor.execute('''
+        SELECT id, roll_no, name, email, department, year, division, image_path
+        FROM students
+        ORDER BY roll_no
+        ''')
+        
+        # Convert to list of dictionaries
+        students = []
+        rows = cursor.fetchall()
+        
+        for row in rows:
+            students.append({
+                "id": row["id"],
+                "roll_no": row["roll_no"],
+                "name": row["name"],
+                "email": row["email"],
+                "department": row["department"],
+                "year": row["year"],
+                "division": row["division"],
+                "image_path": row["image_path"]
+            })
+        
+        logger.info(f"Retrieved {len(students)} students from database")
+        conn.close()
+        return students
+    except Exception as e:
+        logger.error(f"Error retrieving students from database: {str(e)}")
+        logger.error(f"Database path: {DB_PATH}")
+        logger.error(f"Database exists: {os.path.exists(str(DB_PATH))}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return []
 
 def get_students_by_subject(subject_id):
     """Get all students enrolled in a specific subject"""
@@ -467,14 +490,23 @@ def get_attendance_report(subject_id, date):
     most_common_period = period_result[0] if period_result else 'N/A'
     
     # Now get the attendance report
+    # Show "not_marked" status instead of defaulting to 'absent'
+    # This distinguishes between:
+    # - 'present': Student was marked present
+    # - 'absent': Student was explicitly marked absent
+    # - 'not_marked': No attendance record exists (student wasn't marked at all)
     cursor.execute('''
     SELECT 
         s.id, 
         s.roll_no, 
         s.name,
         s.email,
-        COALESCE(a.status, 'absent') as status,
-        COALESCE(a.period, ?) as period
+        CASE 
+            WHEN a.id IS NULL THEN 'not_marked'
+            ELSE a.status 
+        END as status,
+        COALESCE(a.period, ?) as period,
+        CASE WHEN a.id IS NULL THEN 1 ELSE 0 END as not_marked
     FROM 
         students s
     JOIN 
@@ -497,6 +529,7 @@ def get_class_attendance_report(date):
     conn = get_connection()
     cursor = conn.cursor()
     
+    # Show "not_marked" status instead of defaulting to 'absent'
     cursor.execute('''
     SELECT 
         s.id, 
@@ -505,7 +538,11 @@ def get_class_attendance_report(date):
         s.email,
         sub.code as subject_code,
         sub.name as subject_name,
-        COALESCE(a.status, 'absent') as status
+        CASE 
+            WHEN a.id IS NULL THEN 'not_marked'
+            ELSE a.status 
+        END as status,
+        CASE WHEN a.id IS NULL THEN 1 ELSE 0 END as not_marked
     FROM 
         students s
     JOIN 
@@ -522,6 +559,62 @@ def get_class_attendance_report(date):
     conn.close()
     
     return results
+
+def check_database_status():
+    """
+    Check database status and return diagnostic information.
+    
+    Returns:
+        Dictionary with database status information
+    """
+    status = {
+        'database_exists': False,
+        'database_path': str(DB_PATH),
+        'tables_exist': False,
+        'students_count': 0,
+        'subjects_count': 0,
+        'attendance_count': 0,
+        'error': None
+    }
+    
+    try:
+        # Check if database file exists
+        status['database_exists'] = os.path.exists(str(DB_PATH))
+        
+        if not status['database_exists']:
+            status['error'] = f"Database file not found at: {DB_PATH}"
+            return status
+        
+        # Try to connect and check tables
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Check if tables exist
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = [row[0] for row in cursor.fetchall()]
+        status['tables_exist'] = len(tables) > 0
+        status['tables'] = tables
+        
+        # Get counts
+        if 'students' in tables:
+            cursor.execute("SELECT COUNT(*) FROM students")
+            status['students_count'] = cursor.fetchone()[0]
+        
+        if 'subjects' in tables:
+            cursor.execute("SELECT COUNT(*) FROM subjects")
+            status['subjects_count'] = cursor.fetchone()[0]
+        
+        if 'attendance' in tables:
+            cursor.execute("SELECT COUNT(*) FROM attendance")
+            status['attendance_count'] = cursor.fetchone()[0]
+        
+        conn.close()
+        
+    except Exception as e:
+        status['error'] = str(e)
+        logger.error(f"Error checking database status: {str(e)}")
+    
+    return status
 
 def get_student_attendance_report(student_id):
     """Get detailed attendance report for a specific student"""
