@@ -169,6 +169,355 @@
 - Email and Google Sheets integration settings
 - Department, year, and division information
 
+### Q3.7: System Flow Diagrams
+
+**Answer:** Below are detailed flowcharts showing the system architecture and operational flows:
+
+#### Overall System Architecture Flow
+
+```text
+┌─────────────────────────────────────────────────────────────────────┐
+│                         USER INTERFACE                              │
+│                      (Streamlit Web App)                            │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐             │
+│  │   Login      │  │ Registration │  │  Attendance  │             │
+│  │   Module     │  │   Module     │  │   Module     │             │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘             │
+│         │                  │                  │                     │
+└─────────┼──────────────────┼──────────────────┼─────────────────────┘
+          │                  │                  │
+          ▼                  ▼                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                         AUTHENTICATION                              │
+│                    (auth_utils.py)                                  │
+│              ┌──────────────────────┐                              │
+│              │  Role-based Access    │                              │
+│              │  (HOD/Teacher/Admin)  │                              │
+│              └──────────┬────────────┘                              │
+└─────────────────────────┼──────────────────────────────────────────┘
+                          │
+          ┌───────────────┼───────────────┐
+          │               │               │
+          ▼               ▼               ▼
+┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+│   Student    │ │   Attendance │ │   Reports    │
+│ Registration │ │   Processing │ │   Generation │
+└──────┬───────┘ └──────┬───────┘ └──────┬───────┘
+       │                │                │
+       ▼                ▼                ▼
+┌──────────────────────────────────────────────────────┐
+│              FACIAL RECOGNITION ENGINE                │
+│              (deepface_utils.py)                      │
+│  ┌──────────────┐         ┌──────────────┐          │
+│  │ Face         │────────▶│ Face         │          │
+│  │ Detection    │         │ Recognition   │          │
+│  │ (OpenCV/     │         │ (Facenet512/  │          │
+│  │  MTCNN)      │         │  ArcFace)     │          │
+│  └──────────────┘         └──────────────┘          │
+└───────────────────────────┬──────────────────────────┘
+                            │
+                            ▼
+┌──────────────────────────────────────────────────────┐
+│              DATABASE LAYER                           │
+│              (db_utils.py)                            │
+│  ┌──────────────┐         ┌──────────────┐          │
+│  │ Students     │         │ Attendance   │          │
+│  │ Table        │         │ Table        │          │
+│  └──────────────┘         └──────────────┘          │
+│              │                     │                  │
+│              └──────────┬──────────┘                  │
+│                         │                             │
+│              ┌──────────▼──────────┐                  │
+│              │   SQLite Database   │                  │
+│              │   (attendance.db)   │                  │
+│              └─────────────────────┘                  │
+└──────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌──────────────────────────────────────────────────────┐
+│              STORAGE LAYER                            │
+│  ┌──────────────┐         ┌──────────────┐          │
+│  │ faces/       │         │ excel_exports│          │
+│  │ (Student     │         │ (Reports)     │          │
+│  │  Photos)     │         │              │          │
+│  └──────────────┘         └──────────────┘          │
+└──────────────────────────────────────────────────────┘
+```
+
+#### Student Registration Flow
+
+```text
+┌─────────────┐
+│   Teacher   │
+│   Login     │
+└──────┬──────┘
+       │
+       ▼
+┌─────────────────────┐
+│  Select "Student    │
+│  Registration"      │
+└──────┬──────────────┘
+       │
+       ▼
+┌─────────────────────┐      ┌──────────────┐
+│  Enter Student      │      │  Upload      │
+│  Details:           │      │  Student     │
+│  - Name             │      │  Photo       │
+│  - Roll Number      │      │              │
+│  - Class            │      │              │
+└──────┬──────────────┘      └──────┬───────┘
+       │                            │
+       └────────────┬───────────────┘
+                    │
+                    ▼
+         ┌──────────────────────┐
+         │  Validate Input      │
+         │  (validators.py)     │
+         └──────┬───────────────┘
+                │
+                ▼
+         ┌──────────────────────┐
+         │  Save Photo to       │
+         │  faces/ directory    │
+         └──────┬───────────────┘
+                │
+                ▼
+         ┌──────────────────────┐
+         │  Insert Record to    │
+         │  students table      │
+         │  (db_utils.py)       │
+         └──────┬───────────────┘
+                │
+                ▼
+         ┌──────────────────────┐
+         │  Success Message     │
+         │  Display to User     │
+         └──────────────────────┘
+```
+
+#### Attendance Marking Flow
+
+```text
+┌─────────────┐
+│   Teacher   │
+│   Login     │
+└──────┬──────┘
+       │
+       ▼
+┌─────────────────────┐
+│  Select "Take       │
+│  Attendance"        │
+└──────┬──────────────┘
+       │
+       ▼
+┌─────────────────────┐      ┌──────────────┐
+│  Select Subject     │      │  Upload      │
+│  & Period           │      │  Classroom   │
+│                     │      │  Image       │
+└──────┬──────────────┘      └──────┬───────┘
+       │                            │
+       └────────────┬───────────────┘
+                    │
+                    ▼
+         ┌──────────────────────┐
+         │  Load Registered     │
+         │  Students from DB    │
+         └──────┬───────────────┘
+                │
+                ▼
+         ┌──────────────────────┐
+         │  Face Detection      │
+         │  (Detect all faces   │
+         │   in classroom img)  │
+         └──────┬───────────────┘
+                │
+                ▼
+         ┌──────────────────────┐
+         │  For Each Detected   │
+         │  Face:               │
+         │  - Extract Embedding │
+         │  - Compare with      │
+         │    Registered Faces  │
+         └──────┬───────────────┘
+                │
+                ▼
+         ┌──────────────────────┐
+         │  Match Found?        │
+         │  (Threshold Check)   │
+         └──────┬───────────────┘
+                │
+        ┌───────┴───────┐
+        │               │
+       YES             NO
+        │               │
+        ▼               ▼
+┌──────────────┐  ┌──────────────┐
+│  Mark        │  │  Mark        │
+│  Present     │  │  Absent      │
+│  in DB       │  │  in DB       │
+└──────┬───────┘  └──────┬───────┘
+       │                 │
+       └────────┬────────┘
+                │
+                ▼
+         ┌──────────────────────┐
+         │  Update Attendance   │
+         │  Table               │
+         │  (db_utils.py)       │
+         └──────┬───────────────┘
+                │
+                ▼
+         ┌──────────────────────┐
+         │  Display Results:    │
+         │  - Present Students  │
+         │  - Absent Students   │
+         │  - Confidence Scores │
+         └──────────────────────┘
+```
+
+#### Report Generation Flow
+
+```text
+┌─────────────┐
+│   Teacher   │
+│   Login     │
+└──────┬──────┘
+       │
+       ▼
+┌─────────────────────┐
+│  Select "Reports"   │
+│  or "Analytics"     │
+└──────┬──────────────┘
+       │
+       ▼
+┌─────────────────────┐
+│  Select Filters:    │
+│  - Date Range       │
+│  - Subject          │
+│  - Student          │
+│  - Class            │
+└──────┬──────────────┘
+       │
+       ▼
+┌─────────────────────┐
+│  Query Database     │
+│  (db_utils.py)      │
+│  - Join tables      │
+│  - Apply filters    │
+│  - Aggregate data   │
+└──────┬──────────────┘
+       │
+       ▼
+┌─────────────────────┐
+│  Process Data       │
+│  (Pandas)           │
+│  - Calculate Stats  │
+│  - Format Data      │
+└──────┬──────────────┘
+       │
+       ▼
+┌─────────────────────┐
+│  Generate           │
+│  Visualizations     │
+│  (Plotly/Matplotlib)│
+└──────┬──────────────┘
+       │
+       ▼
+┌─────────────────────┐
+│  Display Results:   │
+│  - Tables           │
+│  - Charts           │
+│  - Statistics       │
+└──────┬──────────────┘
+       │
+       ▼
+┌─────────────────────┐
+│  Export Option:     │
+│  - Excel Export     │
+│  - Google Sheets    │
+└─────────────────────┘
+```
+
+#### Data Flow Diagram (Circuit-Style)
+
+```text
+                    ┌──────────────┐
+                    │   ESP32-CAM  │
+                    │   (Optional) │
+                    └──────┬───────┘
+                           │
+                           │ Image Stream
+                           ▼
+         ┌─────────────────────────────────┐
+         │     Streamlit Web Interface      │
+         │         (app.py)                 │
+         └──────┬───────────────────┬───────┘
+                │                   │
+                │                   │
+        ┌───────▼───────┐   ┌───────▼───────┐
+        │  Registration │   │   Attendance  │
+        │   Request     │   │    Request    │
+        └───────┬───────┘   └───────┬───────┘
+                │                   │
+                ▼                   ▼
+        ┌───────────────┐   ┌───────────────┐
+        │  Save Image   │   │  Load Image   │
+        │  to faces/    │   │  from Upload  │
+        └───────┬───────┘   └───────┬───────┘
+                │                   │
+                ▼                   ▼
+        ┌───────────────┐   ┌───────────────┐
+        │  Insert to    │   │  DeepFace     │
+        │  students     │   │  Processing   │
+        │  table        │   │               │
+        └───────┬───────┘   └───────┬───────┘
+                │                   │
+                │                   │ Load Reference
+                │                   │ Images from
+                │                   │ faces/
+                │                   │
+                │                   ▼
+                │           ┌───────────────┐
+                │           │  Face         │
+                │           │  Detection    │
+                │           │  & Matching   │
+                │           └───────┬───────┘
+                │                   │
+                │                   ▼
+                │           ┌───────────────┐
+                │           │  Match        │
+                │           │  Results      │
+                │           └───────┬───────┘
+                │                   │
+                └───────────┬───────┘
+                            │
+                            ▼
+                    ┌───────────────┐
+                    │  Update       │
+                    │  attendance   │
+                    │  table        │
+                    └───────┬───────┘
+                            │
+                            ▼
+                    ┌───────────────┐
+                    │  SQLite DB    │
+                    │  (attendance  │
+                    │   .db)        │
+                    └───────┬───────┘
+                            │
+                            ▼
+                    ┌───────────────┐
+                    │  Query for    │
+                    │  Reports      │
+                    └───────┬───────┘
+                            │
+                            ▼
+                    ┌───────────────┐
+                    │  Generate     │
+                    │  Excel/Charts │
+                    └───────────────┘
+```
+
 ---
 
 ## 4. Facial Recognition & Deep Learning
