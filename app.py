@@ -716,11 +716,72 @@ elif page == "Take Attendance":
                 logger.error(f"Error opening webcam image: {str(e)}")
                 st.error("Failed to process webcam image.")
     else:
-        esp32_url = st.text_input("ESP32-CAM URL", value="http://esp32-cam-ip/capture")
-        if st.button("Capture Image"):
+        # ESP32-CAM Configuration
+        st.info("💡 Enter your ESP32-CAM IP address and credentials (if required)")
+        
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            esp32_base_url = st.text_input(
+                "ESP32-CAM Base URL", 
+                value="http://192.168.137.208:8080",
+                help="Enter the base URL of your ESP32-CAM including port if needed (e.g., http://192.168.137.208:8080)"
+            )
+        
+        with col2:
+            use_auth = st.checkbox("Use Authentication", value=True, help="Enable if your ESP32-CAM requires login")
+        
+        esp32_username = None
+        esp32_password = None
+        if use_auth:
+            auth_col1, auth_col2 = st.columns(2)
+            with auth_col1:
+                esp32_username = st.text_input("Username", value="admin", help="ESP32-CAM username")
+            with auth_col2:
+                esp32_password = st.text_input("Password", type="password", value="admin", help="ESP32-CAM password")
+        
+        # Build URLs
+        stream_url = f"{esp32_base_url}/stream"
+        capture_url = f"{esp32_base_url}/capture"
+        
+        # Create authentication if needed
+        auth = None
+        if use_auth and esp32_username and esp32_password:
+            from requests.auth import HTTPBasicAuth
+            auth = HTTPBasicAuth(esp32_username, esp32_password)
+        
+        # Display live stream
+        st.subheader("Live Stream")
+        
+        # Build stream URL with authentication in URL if needed
+        if use_auth and esp32_username and esp32_password:
+            # For HTML display, we need to embed credentials in URL (works for local network)
+            stream_display_url = f"{esp32_base_url.replace('http://', f'http://{esp32_username}:{esp32_password}@')}/stream"
+        else:
+            stream_display_url = stream_url
+        
+        # Display stream using HTML - works with MJPEG streams
+        stream_html = f"""
+        <div style="text-align: center; margin: 20px 0;">
+            <img src="{stream_display_url}" 
+                 style="max-width: 100%; max-height: 500px; height: auto; border: 2px solid #ddd; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);" 
+                 alt="ESP32-CAM Stream"
+                 onerror="this.onerror=null; this.src='data:image/svg+xml,%3Csvg xmlns=\\'http://www.w3.org/2000/svg\\' width=\\'400\\' height=\\'300\\'%3E%3Ctext x=\\'50%25\\' y=\\'50%25\\' text-anchor=\\'middle\\'%3EStream not available%3C/text%3E%3C/svg%3E';">
+        </div>
+        """
+        st.markdown(stream_html, unsafe_allow_html=True)
+        st.caption("💡 Live stream from ESP32-CAM. Click 'Capture Image' below to take a snapshot for attendance.")
+        
+        # Capture button
+        col_cap1, col_cap2 = st.columns([1, 3])
+        with col_cap1:
+            capture_button = st.button("📸 Capture Image", type="primary", use_container_width=True)
+        
+        if capture_button:
             try:
                 with st.spinner("Capturing image from ESP32-CAM..."):
-                    response = requests.get(esp32_url, timeout=10)
+                    # Try capture endpoint first
+                    response = requests.get(capture_url, auth=auth, timeout=10)
+                    
                     if response.status_code == 200:
                         # Save the captured image
                         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -729,17 +790,57 @@ elif page == "Take Attendance":
                             f.write(response.content)
                         
                         image = Image.open(image_path)
-                        st.image(image, caption="Captured Image", width=400)
+                        st.success("✅ Image captured successfully!")
+                        st.image(image, caption="Captured Image from ESP32-CAM", width=600)
                         image_file = image_path
-                        image_files = [image_path]  # Add to image_files list for consistency
+                        image_files = [image_path]
+                    elif response.status_code == 401:
+                        st.error("❌ Authentication failed. Please check your username and password.")
+                        logger.error(f"ESP32-CAM authentication failed. Status code: {response.status_code}")
                     else:
-                        st.error(f"Failed to capture image from ESP32-CAM. Status code: {response.status_code}")
+                        # Try alternative endpoints
+                        alt_urls = [
+                            f"{esp32_base_url}/jpg",
+                            f"{esp32_base_url}/",
+                            f"{esp32_base_url}/snapshot"
+                        ]
+                        captured = False
+                        for alt_url in alt_urls:
+                            try:
+                                alt_response = requests.get(alt_url, auth=auth, timeout=5)
+                                if alt_response.status_code == 200 and alt_response.headers.get('content-type', '').startswith('image'):
+                                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                                    image_path = f"captured_{timestamp}.jpg"
+                                    with open(image_path, "wb") as f:
+                                        f.write(alt_response.content)
+                                    
+                                    image = Image.open(image_path)
+                                    st.success(f"✅ Image captured from {alt_url}!")
+                                    st.image(image, caption="Captured Image from ESP32-CAM", width=600)
+                                    image_file = image_path
+                                    image_files = [image_path]
+                                    captured = True
+                                    break
+                            except:
+                                continue
+                        
+                        if not captured:
+                            st.error(f"❌ Failed to capture image. Status code: {response.status_code}")
+                            st.info("💡 Try different endpoints or check if authentication is required.")
+                            logger.error(f"ESP32-CAM capture failed. Status code: {response.status_code}")
+                            
+            except requests.exceptions.Timeout:
+                st.error("⏱️ Connection timeout. Please check if ESP32-CAM is accessible.")
+                logger.error("ESP32-CAM connection timeout")
+            except requests.exceptions.ConnectionError:
+                st.error("🔌 Connection error. Please verify the ESP32-CAM IP address and network connection.")
+                logger.error("ESP32-CAM connection error")
             except requests.RequestException as e:
                 logger.error(f"ESP32-CAM connection error: {str(e)}")
-                st.error(f"Error connecting to ESP32-CAM: {str(e)}")
+                st.error(f"❌ Error connecting to ESP32-CAM: {str(e)}")
             except Exception as e:
                 logger.error(f"Error capturing image: {str(e)}")
-                st.error(f"Error: {str(e)}")
+                st.error(f"❌ Error: {str(e)}")
     
     # Process attendance button - just analyze, don't save yet
     if deepface_available and st.button("Analyze Image") and len(image_files) > 0 and subject_id is not None:
