@@ -528,9 +528,15 @@ def visualize_detected_faces(image_path, face_locations, recognized_students=Non
                 2
             )
         
-        # Display the image with annotations
-        st.subheader("Visualization of Detected Faces")
-        st.image(display_image, caption="Detected Faces", use_column_width=True)
+        # Display the image with annotations (smaller size)
+        st.subheader("Detected Faces")
+        # Resize image to make it smaller
+        height, width = display_image.shape[:2]
+        scale = 0.5  # 50% of original size
+        new_width = int(width * scale)
+        new_height = int(height * scale)
+        resized_image = cv2.resize(display_image, (new_width, new_height))
+        st.image(resized_image, caption="Detected Faces", width=400)
         
     except Exception as e:
         logger.error(f"Error visualizing face detection: {str(e)}")
@@ -1317,13 +1323,31 @@ elif page == "Take Attendance":
     
     # Add model selection options
     st.subheader("Recognition Settings")
-    cols = st.columns([2, 1])
+    
+    # Accuracy tips
+    with st.expander("💡 Tips for Maximum Accuracy", expanded=False):
+        st.markdown("""
+        **Best Configuration for Maximum Accuracy:**
+        - **Model:** ArcFace (99%+ accuracy) or Facenet512 (99% accuracy)
+        - **Detector:** MTCNN (best) or RetinaFace (very good)
+        - **Threshold:** 0.3-0.4 (lower = stricter, fewer false positives)
+        
+        **Quick Setup:**
+        1. Select **ArcFace** model + **MTCNN** detector
+        2. Set threshold to **0.4**
+        3. Use high-quality student photos (see guide)
+        4. Ensure good classroom lighting
+        
+        📖 See `ACCURACY_GUIDE.md` for detailed recommendations.
+        """)
+    
+    cols = st.columns([2, 1, 1])
     with cols[0]:
         model_name = st.selectbox(
             "Face Recognition Model",
-            ["Facenet512", "VGG-Face", "OpenFace", "DeepFace", "ArcFace", "SFace"],
-            index=0,
-            help="Facenet512 provides higher accuracy but may be slightly slower"
+            ["ArcFace", "Facenet512", "VGG-Face", "SFace", "OpenFace", "DeepFace"],
+            index=0,  # Default to ArcFace (highest accuracy). Facenet512 is at index 1 if ArcFace not available
+            help="ArcFace: Highest accuracy (~99%). Facenet512: Very high accuracy (~99%), good balance. See ACCURACY_GUIDE.md for details."
         )
 
     with cols[1]:
@@ -1333,7 +1357,15 @@ elif page == "Take Attendance":
             max_value=0.9,
             value=0.4,
             step=0.05,
-            help="Lower values mean stricter matching (fewer false positives)"
+            help="Lower = stricter (fewer false positives). Recommended: 0.3-0.4 for high accuracy"
+        )
+    
+    with cols[2]:
+        detector_backend = st.selectbox(
+            "Face Detector",
+            ["opencv", "mtcnn", "retinaface", "ssd", "dlib"],
+            index=0,
+            help="MTCNN: Highest accuracy (slower). RetinaFace: Very accurate. OpenCV: Fast (default)"
         )
     
     image_files = []
@@ -1580,7 +1612,7 @@ elif page == "Take Attendance":
                             classroom_image = img_file
                         
                         # Detect all faces first to get count
-                        detected_faces, face_locations = detect_faces_with_details(classroom_image)
+                        detected_faces, face_locations = detect_faces_with_details(classroom_image, detector_backend=detector_backend)
                         
                         # Use the selected model with adjusted threshold for better recognition
                         present_students, confidence_scores = verify_faces(
@@ -1588,7 +1620,8 @@ elif page == "Take Attendance":
                             students=get_all_students(),
                             threshold=threshold,
                             model_name=model_name,
-                            return_confidence=True
+                            return_confidence=True,
+                            detector_backend=detector_backend
                         )
                         
                         # Calculate processing time
@@ -1652,51 +1685,57 @@ elif page == "Take Attendance":
                             except Exception as e:
                                 st.error(f"Error loading image: {str(e)}")
                     
-                    # Allow marking attendance for all recognized students
-                    st.markdown("### Mark Attendance")
-                    st.markdown("Select students to mark as present:")
+                    # Manual verification for batch processing
+                    st.markdown("### Review & Edit Attendance")
+                    st.info("👆 Review the recognized students below. You can edit the attendance list before confirming.")
                     
-                    # Using container instead of form for more flexibility
-                    batch_container = st.container()
-                    with batch_container:
+                    # Get all enrolled students and recognized student IDs
+                    all_enrolled_students = get_students_by_subject(subject_id)
+                    recognized_student_ids = [student["id"] for student in recognized_student_details] if recognized_student_details else []
+                    
+                    # Create a form for attendance verification
+                    with st.form("batch_attendance_verification_form", clear_on_submit=False):
+                        st.markdown("**Select students to mark as present:**")
+                        
                         selected_students = {}
                         
-                        for student in recognized_student_details:
+                        # Show all enrolled students with checkboxes
+                        # Pre-check recognized students
+                        for student in all_enrolled_students:
+                            is_recognized = student["id"] in recognized_student_ids
                             selected_students[student["id"]] = st.checkbox(
                                 f"{student['roll_no']} - {student['name']}",
-                                value=True,
-                                key=f"batch_student_{student['id']}"
+                                value=is_recognized,
+                                key=f"batch_verify_student_{student['id']}_{attendance_date.strftime('%Y-%m-%d')}_{selected_period}"
                             )
-                    
-                    # Mark attendance automatically button (outside the form)
-                    if st.button("Mark Attendance Automatically", key="auto_mark_batch", use_container_width=True, type="primary"):
-                        # Get selected students
-                        marked_ids = [student_id for student_id, selected in selected_students.items() if selected]
-                        print(f"AUTO DEBUG: marked_ids: {marked_ids}")
                         
-                        if marked_ids:
+                        # Submit button
+                        submitted = st.form_submit_button("✅ Confirm and Mark Attendance", use_container_width=True, type="primary")
+                        
+                        if submitted:
+                            # Get selected student IDs
+                            marked_ids = [student_id for student_id, selected in selected_students.items() if selected]
+                            
                             # Mark attendance in database
                             selected_date = attendance_date.strftime("%Y-%m-%d")
                             success_count = 0
+                            absent_count = 0
                             
                             print(f"DEBUG: Trying to mark attendance for {len(marked_ids)} students")
                             print(f"DEBUG: subject_id={subject_id}, date={selected_date}, period={selected_period}")
                             
-                            # Get all students enrolled in this subject
-                            all_enrolled_students = get_students_by_subject(subject_id)
-                            all_enrolled_ids = [s["id"] for s in all_enrolled_students]
-                            
                             # Mark present students
-                            for student_id in marked_ids:
-                                print(f"DEBUG: Marking attendance for student_id={student_id}")
-                                success = mark_attendance(student_id, subject_id, selected_date, selected_period, status="present")
-                                print(f"DEBUG: Attendance marking result: {success}")
-                                if success:
-                                    success_count += 1
+                            if marked_ids:
+                                for student_id in marked_ids:
+                                    print(f"DEBUG: Marking attendance for student_id={student_id}")
+                                    success = mark_attendance(student_id, subject_id, selected_date, selected_period, status="present")
+                                    print(f"DEBUG: Attendance marking result: {success}")
+                                    if success:
+                                        success_count += 1
                             
                             # Mark absent students (those enrolled but not selected)
+                            all_enrolled_ids = [s["id"] for s in all_enrolled_students]
                             absent_student_ids = [sid for sid in all_enrolled_ids if sid not in marked_ids]
-                            absent_count = 0
                             
                             if absent_student_ids:
                                 print(f"DEBUG: Marking {len(absent_student_ids)} students as absent")
@@ -1705,7 +1744,7 @@ elif page == "Take Attendance":
                                     if success:
                                         absent_count += 1
                             
-                            if success_count > 0:
+                            if success_count > 0 or absent_count > 0:
                                 message = f"✅ Attendance saved for {success_count} present students"
                                 if absent_count > 0:
                                     message += f" and {absent_count} absent students"
@@ -1862,62 +1901,89 @@ elif page == "Take Attendance":
                         if len(detected_faces) > len(present_students):
                             st.warning(f"⚠️ {len(detected_faces) - len(present_students)} faces detected but not recognized. These may be students not registered in the system or false detections.")
                         
-                        # Show table of recognized students and mark attendance automatically
-                        if present_students:
-                            st.markdown("### Recognized Students")
+                        # Manual verification before marking attendance
+                        selected_date = attendance_date.strftime("%Y-%m-%d")
+                        
+                        # Get all students enrolled in this subject
+                        all_enrolled_students = get_students_by_subject(subject_id)
+                        present_student_ids = [student["id"] for student in present_students] if present_students else []
+                        
+                        # Manual verification interface
+                        st.markdown("### Review & Edit Attendance")
+                        st.info("👆 Review the recognized students below. You can edit the attendance list before confirming.")
+                        
+                        # Create a form for attendance verification
+                        with st.form("attendance_verification_form", clear_on_submit=False):
+                            st.markdown("**Select students to mark as present:**")
                             
-                            # Mark attendance automatically
-                            selected_date = attendance_date.strftime("%Y-%m-%d")
-                            success_count = 0
+                            # Store selected students
+                            selected_students = {}
                             
-                            # Get student IDs for marking attendance
-                            present_student_ids = [student["id"] for student in present_students]
+                            # Show all enrolled students with checkboxes
+                            # Pre-check recognized students
+                            for student in all_enrolled_students:
+                                is_recognized = student["id"] in present_student_ids
+                                selected_students[student["id"]] = st.checkbox(
+                                    f"{student['roll_no']} - {student['name']}",
+                                    value=is_recognized,
+                                    key=f"verify_student_{student['id']}_{selected_date}_{selected_period}"
+                                )
                             
-                            # Get all students enrolled in this subject
-                            all_enrolled_students = get_students_by_subject(subject_id)
-                            all_enrolled_ids = [s["id"] for s in all_enrolled_students]
+                            # Submit button
+                            submitted = st.form_submit_button("✅ Confirm and Mark Attendance", use_container_width=True, type="primary")
                             
-                            # Mark present students
-                            print(f"DEBUG: Automatically marking attendance for {len(present_student_ids)} present students")
-                            print(f"DEBUG: subject_id={subject_id}, date={selected_date}, period={selected_period}")
-                            
-                            for student_id in present_student_ids:
-                                print(f"DEBUG: Marking attendance for student_id={student_id}")
-                                success = mark_attendance(student_id, subject_id, selected_date, selected_period, status="present")
-                                print(f"DEBUG: Attendance marking result: {success}")
-                                if success:
-                                    success_count += 1
-                            
-                            # Mark absent students (those enrolled but not present)
-                            absent_student_ids = [sid for sid in all_enrolled_ids if sid not in present_student_ids]
-                            absent_count = 0
-                            
-                            if absent_student_ids:
-                                print(f"DEBUG: Marking {len(absent_student_ids)} students as absent")
-                                for student_id in absent_student_ids:
-                                    success = mark_attendance(student_id, subject_id, selected_date, selected_period, status="absent")
-                                    if success:
-                                        absent_count += 1
-                            
-                            if success_count > 0:
-                                message = f"✅ Attendance automatically saved for {success_count} present students"
-                                if absent_count > 0:
-                                    message += f" and {absent_count} absent students"
-                                message += f" on {selected_date}!"
-                                st.success(message)
-                                print(f"DEBUG: Successfully saved attendance for {success_count} present and {absent_count} absent students")
+                            if submitted:
+                                # Get selected student IDs
+                                marked_ids = [student_id for student_id, selected in selected_students.items() if selected]
                                 
-                                # Store attendance data in session state
-                                st.session_state.last_attendance = {
-                                    'subject': selected_subject,
-                                    'date': selected_date,
-                                    'period': selected_period,
-                                    'count': success_count
-                                }
-                            else:
-                                st.error("Failed to save attendance automatically. Please check the logs.")
-                            
-                            # Display students in a table
+                                if marked_ids or len(marked_ids) == 0:
+                                    success_count = 0
+                                    absent_count = 0
+                                    
+                                    # Mark present students
+                                    if marked_ids:
+                                        print(f"DEBUG: Marking attendance for {len(marked_ids)} present students")
+                                        print(f"DEBUG: subject_id={subject_id}, date={selected_date}, period={selected_period}")
+                                        
+                                        for student_id in marked_ids:
+                                            print(f"DEBUG: Marking attendance for student_id={student_id}")
+                                            success = mark_attendance(student_id, subject_id, selected_date, selected_period, status="present")
+                                            print(f"DEBUG: Attendance marking result: {success}")
+                                            if success:
+                                                success_count += 1
+                                    
+                                    # Mark absent students (those enrolled but not selected)
+                                    all_enrolled_ids = [s["id"] for s in all_enrolled_students]
+                                    absent_student_ids = [sid for sid in all_enrolled_ids if sid not in marked_ids]
+                                    
+                                    if absent_student_ids:
+                                        print(f"DEBUG: Marking {len(absent_student_ids)} students as absent")
+                                        for student_id in absent_student_ids:
+                                            success = mark_attendance(student_id, subject_id, selected_date, selected_period, status="absent")
+                                            if success:
+                                                absent_count += 1
+                                    
+                                    if success_count > 0 or absent_count > 0:
+                                        message = f"✅ Attendance saved for {success_count} present students"
+                                        if absent_count > 0:
+                                            message += f" and {absent_count} absent students"
+                                        message += f" on {selected_date}!"
+                                        st.success(message)
+                                        print(f"DEBUG: Successfully saved attendance for {success_count} present and {absent_count} absent students")
+                                        
+                                        # Store attendance data in session state
+                                        st.session_state.last_attendance = {
+                                            'subject': selected_subject,
+                                            'date': selected_date,
+                                            'period': selected_period,
+                                            'count': success_count
+                                        }
+                                    else:
+                                        st.error("Failed to save attendance. Please check the logs.")
+                        
+                        # Display recognized students in a table for reference
+                        if present_students:
+                            st.markdown("### Recognized Students (Reference)")
                             student_data = []
                             for student in present_students:
                                 student_data.append({

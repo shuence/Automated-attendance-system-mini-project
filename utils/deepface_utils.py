@@ -18,7 +18,7 @@ try:
 except ImportError as e:
     logger.error(f"Error importing DeepFace: {str(e)}")
     
-def verify_faces(classroom_image_path, students, threshold=0.6, model_name="Facenet512", return_confidence=False):
+def verify_faces(classroom_image_path, students, threshold=0.6, model_name="Facenet512", return_confidence=False, detector_backend="opencv"):
     """
     Verify faces in a classroom image against registered student faces
     
@@ -47,7 +47,7 @@ def verify_faces(classroom_image_path, students, threshold=0.6, model_name="Face
     # Try to extract all faces from classroom image
     try:
         # Extract all faces from the classroom image
-        detected_faces, face_locations = detect_faces_with_details(classroom_image_path)
+        detected_faces, face_locations = detect_faces_with_details(classroom_image_path, detector_backend=detector_backend)
         
         logger.info(f"Detected {len(detected_faces)} faces in classroom image")
         
@@ -214,12 +214,18 @@ def detect_faces(image_path):
         logger.error(f"Error detecting faces: {str(e)}")
         return 0
 
-def detect_faces_with_details(image_path):
+def detect_faces_with_details(image_path, detector_backend="opencv"):
     """
     Detect faces in an image and return detailed information
     
     Args:
         image_path: Path to the image
+        detector_backend: Face detector to use ("opencv", "mtcnn", "retinaface", "ssd", "dlib")
+                        - "mtcnn": Highest accuracy, slower
+                        - "retinaface": Very accurate, good for challenging conditions
+                        - "opencv": Fast but less accurate (default)
+                        - "ssd": Fast but lower accuracy
+                        - "dlib": Good balance
         
     Returns:
         Tuple of (detected_faces, face_locations)
@@ -235,7 +241,7 @@ def detect_faces_with_details(image_path):
             img_path=image_path,
             enforce_detection=False,
             align=True,
-            detector_backend="opencv"
+            detector_backend=detector_backend
         )
         
         # Extract face locations

@@ -262,5 +262,77 @@
     "created_at": "2025-11-22T01:58:43.267269",
     "expires_at": "2025-12-22T01:58:43.267262",
     "remember_me": true
+  },
+  "681377bcba141c30b6f61ae898c5bea98869975037a8250ac9313bce0f1436e7": {
+    "username": "admin",
+    "user_data": {
+      "id": 1,
+      "username": "admin",
+      "role": "HOD",
+      "name": "Administrator",
+      "email": "admin@example.com",
+      "department": "ENTC",
+      "permissions": [
+        "view_all_reports",
+        "edit_attendance",
+        "manage_students",
+        "manage_users",
+        "view_analytics",
+        "export_data",
+        "take_attendance",
+        "view_class_reports"
+      ]
+    },
+    "created_at": "2025-11-22T02:09:14.678916",
+    "expires_at": "2025-12-22T02:09:14.678904",
+    "remember_me": true
+  },
+  "3df1be2a82e89ce8d4685ee4ff8583957eb96874a4f9bd2c5d18640423576aea": {
+    "username": "admin",
+    "user_data": {
+      "id": 1,
+      "username": "admin",
+      "role": "HOD",
+      "name": "Administrator",
+      "email": "admin@example.com",
+      "department": "ENTC",
+      "permissions": [
+        "view_all_reports",
+        "edit_attendance",
+        "manage_students",
+        "manage_users",
+        "view_analytics",
+        "export_data",
+        "take_attendance",
+        "view_class_reports"
+      ]
+    },
+    "created_at": "2025-11-22T02:16:27.649323",
+    "expires_at": "2025-12-22T02:16:27.649315",
+    "remember_me": true
+  },
+  "57b0d26797deba1a15e03aedd5bea5c42906864f71eea40e6c6c42da6a0e9961": {
+    "username": "admin",
+    "user_data": {
+      "id": 1,
+      "username": "admin",
+      "role": "HOD",
+      "name": "Administrator",
+      "email": "admin@example.com",
+      "department": "ENTC",
+      "permissions": [
+        "view_all_reports",
+        "edit_attendance",
+        "manage_students",
+        "manage_users",
+        "view_analytics",
+        "export_data",
+        "take_attendance",
+        "view_class_reports"
+      ]
+    },
+    "created_at": "2025-11-22T02:19:14.651853",
+    "expires_at": "2025-12-22T02:19:14.651842",
+    "remember_me": true
   }
 }
