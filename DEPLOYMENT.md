@@ -11,6 +11,7 @@ This is a common issue when deploying to platforms like Streamlit Cloud, Heroku,
 **Problem:** The database file might be in a different location or not accessible in deployment.
 
 **Solution:**
+
 - The database is stored at: `db/attendance.db` (relative to project root)
 - Ensure the `db` directory is created and writable
 - Check file permissions in deployment environment
@@ -26,6 +27,7 @@ export DATABASE_PATH="/path/to/your/database.db"
 **Problem:** Some deployment platforms (like Heroku) use ephemeral file systems that reset on each deployment.
 
 **Solution:**
+
 - Use a persistent database service (PostgreSQL, MySQL) instead of SQLite
 - Or use cloud storage for the database file
 - Consider using environment variables to point to a persistent storage location
@@ -35,6 +37,7 @@ export DATABASE_PATH="/path/to/your/database.db"
 **Problem:** The database might not be initialized on first deployment.
 
 **Solution:**
+
 - The app automatically initializes the database on startup
 - Check logs for "Database initialized successfully" message
 - If initialization fails, check file permissions
@@ -44,6 +47,7 @@ export DATABASE_PATH="/path/to/your/database.db"
 **Problem:** Your local database data doesn't appear in deployment.
 
 **Solution:**
+
 - **Local database is NOT automatically synced to deployment**
 - You need to either:
   1. **Export and import data:**
@@ -68,6 +72,7 @@ export DATABASE_PATH="/path/to/your/database.db"
 **Problem:** Relative paths might not work in deployment.
 
 **Solution:**
+
 - All paths are now handled using `Path` objects
 - Paths are relative to the project root
 - Check that all directories are created:
@@ -88,17 +93,20 @@ Database ready - Students: X, Subjects: Y, Attendance: Z
 ### 7. Deployment Platform Specific
 
 #### Streamlit Cloud
+
 - Database persists in the app's file system
 - Data survives restarts but NOT redeployments
 - Use Streamlit Secrets for sensitive data
 - Consider using Streamlit's database integrations
 
 #### Heroku
+
 - Uses ephemeral file system
 - Database resets on each deployment
 - **Must use external database** (PostgreSQL addon recommended)
 
 #### Railway/Render
+
 - File system persists
 - Database should work as-is
 - Check file permissions
@@ -114,6 +122,7 @@ Database ready - Students: X, Subjects: Y, Attendance: Z
 ### Recommended: Use External Database for Production
 
 For production deployments, consider migrating to:
+
 - **PostgreSQL** (recommended)
 - **MySQL**
 - **SQLite with cloud storage** (S3, Google Cloud Storage)
