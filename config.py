@@ -94,7 +94,7 @@ EMAIL_SEND_ON_PRESENT = os.getenv("EMAIL_SEND_ON_PRESENT", "true").lower() == "t
 EMAIL_SEND_ON_ABSENT = os.getenv("EMAIL_SEND_ON_ABSENT", "true").lower() == "true"
 
 # Google Sheets settings (can be overridden via environment variables)
-GOOGLE_SHEETS_ENABLED = os.getenv("GOOGLE_SHEETS_ENABLED", "false").lower() == "true"
+GOOGLE_SHEETS_ENABLED = os.getenv("GOOGLE_SHEETS_ENABLED", "true").lower() == "true"
 GOOGLE_SHEETS_CREDENTIALS_FILE = os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE", str(BASE_DIR / "google_credentials.json"))
 GOOGLE_SHEETS_SPREADSHEET_ID = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "")
 GOOGLE_SHEETS_FOLDER_ID = os.getenv("GOOGLE_SHEETS_FOLDER_ID", "")  # Optional: folder to create sheets in
