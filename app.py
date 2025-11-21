@@ -200,8 +200,8 @@ if "user" not in st.session_state:
     st.session_state.user = None
 if "session_token" not in st.session_state:
     st.session_state.session_token = None
-if "localStorage_restored" not in st.session_state:
-    st.session_state.localStorage_restored = False
+if "token_checked" not in st.session_state:
+    st.session_state.token_checked = False
 
 # Import authentication utilities
 try:
@@ -212,34 +212,8 @@ except ImportError as e:
     logger.error(f"Error importing auth utilities: {str(e)}")
     auth_available = False
 
-# Restore session from localStorage on first load only
-if not st.session_state.localStorage_restored and not st.session_state.authenticated:
-    # Use JavaScript to read token from localStorage and pass it via a one-time mechanism
-    # We'll use a hidden div that JavaScript can populate, then read it
-    restore_script = """
-    <script>
-    (function() {
-        const token = localStorage.getItem('attendance_session_token');
-        if (token) {
-            // Store token in window object and trigger a rerun with query param
-            window.attendanceToken = token;
-            const url = new URL(window.location);
-            if (!url.searchParams.has('_token')) {
-                url.searchParams.set('_token', token);
-                window.history.replaceState({}, '', url);
-                // Small delay to ensure URL is updated before rerun
-                setTimeout(function() {
-                    window.location.reload();
-                }, 100);
-            }
-        }
-    })();
-    </script>
-    """
-    st.components.v1.html(restore_script, height=0)
-    st.session_state.localStorage_restored = True
-
 # Try to restore session from persistent token
+# Check on every refresh if not authenticated
 if not st.session_state.authenticated or not st.session_state.user:
     try:
         from utils.session_utils import get_session_token
@@ -257,6 +231,27 @@ if not st.session_state.authenticated or not st.session_state.user:
                 token_to_check = query_params['_token'][0]
                 # Remove the token from URL after reading
                 st.experimental_set_query_params()
+            else:
+                # If no token in query params, check localStorage via JavaScript
+                # This will only run once per page load since query params persist the check
+                restore_script = """
+                <script>
+                (function() {
+                    const token = localStorage.getItem('attendance_session_token');
+                    if (token) {
+                        const url = new URL(window.location);
+                        // Only add token if not already in URL to prevent loops
+                        if (!url.searchParams.has('_token')) {
+                            url.searchParams.set('_token', token);
+                            window.history.replaceState({}, '', url);
+                            // Trigger a reload to restore session
+                            window.location.reload();
+                        }
+                    }
+                })();
+                </script>
+                """
+                st.components.v1.html(restore_script, height=0)
         
         if token_to_check:
             user_data = get_session_token(token_to_check)
@@ -264,10 +259,11 @@ if not st.session_state.authenticated or not st.session_state.user:
                 st.session_state.user = user_data
                 st.session_state.authenticated = True
                 st.session_state.session_token = token_to_check
-                st.session_state.localStorage_restored = True
+                st.session_state.token_checked = True
             else:
                 # Token expired or invalid, clear it
                 st.session_state.session_token = None
+                st.session_state.token_checked = True
                 # Clear from localStorage too
                 clear_localStorage_script = """
                 <script>
@@ -275,9 +271,12 @@ if not st.session_state.authenticated or not st.session_state.user:
                 </script>
                 """
                 st.components.v1.html(clear_localStorage_script, height=0)
+        else:
+            st.session_state.token_checked = True
             
     except Exception as e:
         logger.error(f"Error restoring session: {str(e)}")
+        st.session_state.token_checked = True
 
 # Check authentication - show login page if not authenticated
 if not st.session_state.authenticated or not st.session_state.user:
@@ -322,18 +321,25 @@ if st.sidebar.button("🚪 Logout", use_container_width=True, type="secondary"):
         except:
             pass
     
-    # Clear from localStorage
+    # Clear from localStorage and query params
     clear_localStorage_script = """
     <script>
     localStorage.removeItem('attendance_session_token');
-    window.location.hash = '';
+    // Clear query params
+    const url = new URL(window.location);
+    url.searchParams.delete('_token');
+    window.history.replaceState({}, '', url);
     </script>
     """
     st.components.v1.html(clear_localStorage_script, height=0)
     
+    # Clear query params in Streamlit
+    st.experimental_set_query_params()
+    
     st.session_state.authenticated = False
     st.session_state.user = None
     st.session_state.session_token = None
+    st.session_state.token_checked = False
     st.experimental_rerun()
 
 st.sidebar.markdown("---")

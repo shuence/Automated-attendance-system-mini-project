@@ -63,15 +63,16 @@ def show_login_page():
                             token = save_session_token(username, user, remember_me)
                             if token:
                                 st.session_state.session_token = token
+                                st.session_state.token_checked = True
                                 
-                                # Save token to localStorage using JavaScript
-                                if remember_me:
-                                    save_token_script = f"""
-                                    <script>
-                                    localStorage.setItem('attendance_session_token', '{token}');
-                                    </script>
-                                    """
-                                    st.components.v1.html(save_token_script, height=0)
+                                # Always save token to localStorage (for session persistence)
+                                # This allows the session to persist across page refreshes
+                                save_token_script = f"""
+                                <script>
+                                localStorage.setItem('attendance_session_token', '{token}');
+                                </script>
+                                """
+                                st.components.v1.html(save_token_script, height=0)
                         except Exception as e:
                             # If session saving fails, continue with regular login
                             pass
