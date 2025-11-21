@@ -643,12 +643,51 @@ def get_student_attendance_report(student_id):
     
     return results
 
-def get_student_attendance_summary(student_id):
+def calculate_expected_classes(subject_code_or_name, date_from, date_to):
+    """Calculate expected number of classes for a subject based on weekly class count and date range"""
+    try:
+        from config import SUBJECT_WEEKLY_CLASSES
+        import datetime
+        
+        # Get weekly class count for this subject (try both code and name)
+        weekly_classes = SUBJECT_WEEKLY_CLASSES.get(subject_code_or_name, 0)
+        
+        if weekly_classes == 0:
+            return 0
+        
+        # Calculate number of weeks in the date range
+        start_date = datetime.datetime.strptime(date_from, "%Y-%m-%d").date()
+        end_date = datetime.datetime.strptime(date_to, "%Y-%m-%d").date()
+        
+        # Calculate total days
+        total_days = (end_date - start_date).days + 1
+        
+        # Calculate number of weeks (including partial weeks)
+        # Assuming 5 working days per week (Monday to Friday)
+        weeks = total_days / 7.0
+        
+        # Calculate expected classes
+        expected_classes = int(weekly_classes * weeks)
+        
+        return expected_classes
+    except Exception as e:
+        logger.warning(f"Error calculating expected classes for {subject_code_or_name}: {str(e)}")
+        return 0
+
+def get_student_attendance_summary(student_id, date_from=None, date_to=None):
     """Get summary of attendance for a student across all subjects"""
     conn = get_connection()
     cursor = conn.cursor()
     
-    cursor.execute('''
+    # Build query with optional date filtering
+    date_filter = ""
+    params = [student_id, student_id]
+    
+    if date_from and date_to:
+        date_filter = "AND a.date BETWEEN ? AND ?"
+        params.extend([date_from, date_to])
+    
+    cursor.execute(f'''
     SELECT 
         sub.id as subject_id,
         sub.code as subject_code,
@@ -660,16 +699,28 @@ def get_student_attendance_summary(student_id):
     JOIN
         student_subjects ss ON sub.id = ss.subject_id
     LEFT JOIN 
-        attendance a ON sub.id = a.subject_id AND a.student_id = ?
+        attendance a ON sub.id = a.subject_id AND a.student_id = ? {date_filter}
     WHERE 
         ss.student_id = ?
     GROUP BY 
         sub.id
     ORDER BY 
         sub.name
-    ''', (student_id, student_id))
+    ''', params)
     
-    results = [dict(row) for row in cursor.fetchall()]
+    results = []
+    for row in cursor.fetchall():
+        result = dict(row)
+        
+        # Calculate expected classes if date range is provided
+        if date_from and date_to:
+            expected_classes = calculate_expected_classes(result['subject_code'], date_from, date_to)
+            result['expected_classes'] = expected_classes
+        else:
+            result['expected_classes'] = None
+        
+        results.append(result)
+    
     conn.close()
     
     return results

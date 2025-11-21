@@ -65,6 +65,18 @@ DEFAULT_SUBJECTS: List[tuple] = [
     ("Mini project", "Mini Project"),
 ]
 
+# Weekly class counts per subject (classes per week)
+SUBJECT_WEEKLY_CLASSES: Dict[str, int] = {
+    "DSAJ": 4,           # Data Structures and Algorithms in Java
+    "Ewaste": 4,         # E-Waste Management
+    "FOC": 4,            # Fiber Optic Communication
+    "MC": 4,             # Mobile Computing
+    "ME": 4,             # Microwave Engineering
+    "EEFM": 3,           # Engineering Economics and Financial Management
+    "Mini project": 4,   # Mini Project
+    "ME Lab": 2,         # Microwave Engineering Lab (Practical)
+}
+
 # ESP32-CAM defaults (can be overridden via environment variables)
 ESP32_DEFAULT_URL = os.getenv("ESP32_CAM_URL", "http://192.168.137.208:8080")
 ESP32_DEFAULT_USERNAME = os.getenv("ESP32_CAM_USERNAME", "admin")

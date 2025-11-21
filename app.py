@@ -1575,6 +1575,160 @@ elif page == "Take Attendance":
                 logger.error(f"Error capturing image: {str(e)}")
                 st.error(f"❌ Error: {str(e)}")
     
+    # Check for form submissions first (outside button conditional)
+    # This ensures form submission works even after rerun
+    batch_form_submitted = st.session_state.get('batch_attendance_form_submitted', False)
+    single_form_submitted = st.session_state.get('attendance_form_submitted', False)
+    
+    # Process form submissions outside of button conditional
+    if batch_form_submitted and 'batch_attendance_data' in st.session_state:
+        try:
+            logger.info("🔔 BATCH FORM SUBMITTED - Processing attendance marking")
+            form_data = st.session_state.batch_attendance_data
+            selected_students = form_data['selected_students']
+            subject_id_val = form_data['subject_id']
+            selected_subject = form_data['selected_subject']
+            selected_date = form_data['selected_date']
+            selected_period = form_data['selected_period']
+            all_enrolled_students = form_data['all_enrolled_students']
+            
+            logger.info(f"Form data retrieved: {len(selected_students)} students, subject_id={subject_id_val}, date={selected_date}")
+            
+            # Get selected student IDs
+            marked_ids = [student_id for student_id, selected in selected_students.items() if selected]
+            
+            logger.info(f"Marked IDs: {marked_ids}")
+            
+            if subject_id_val is None:
+                st.error("❌ Error: Subject ID is not available.")
+                logger.error("Subject ID is None when trying to mark attendance")
+            else:
+                success_count = 0
+                absent_count = 0
+                
+                logger.info(f"Processing batch attendance: {len(marked_ids)} students. Subject: {subject_id_val}, Date: {selected_date}, Period: {selected_period}")
+                
+                # Mark present students
+                if marked_ids:
+                    for student_id in marked_ids:
+                        try:
+                            success = mark_attendance(student_id, subject_id_val, selected_date, selected_period, status="present")
+                            if success:
+                                success_count += 1
+                        except Exception as e:
+                            logger.error(f"Error marking attendance for student_id={student_id}: {str(e)}")
+                
+                # Mark absent students
+                all_enrolled_ids = [s["id"] for s in all_enrolled_students]
+                absent_student_ids = [sid for sid in all_enrolled_ids if sid not in marked_ids]
+                
+                if absent_student_ids:
+                    for student_id in absent_student_ids:
+                        try:
+                            success = mark_attendance(student_id, subject_id_val, selected_date, selected_period, status="absent")
+                            if success:
+                                absent_count += 1
+                        except Exception as e:
+                            logger.error(f"Error marking absent attendance for student_id={student_id}: {str(e)}")
+                
+                if success_count > 0 or absent_count > 0:
+                    message = f"✅ Attendance saved for {success_count} present students"
+                    if absent_count > 0:
+                        message += f" and {absent_count} absent students"
+                    message += f" on {selected_date}!"
+                    st.success(message)
+                    
+                    st.session_state.last_attendance = {
+                        'subject': selected_subject,
+                        'date': selected_date,
+                        'period': selected_period,
+                        'count': success_count
+                    }
+                    
+                    # Clear form submission state
+                    st.session_state.batch_attendance_form_submitted = False
+                    del st.session_state.batch_attendance_data
+                    st.session_state.clear_attendance_form = True
+                    st.rerun()
+        except Exception as e:
+            logger.error(f"Error processing batch attendance form: {str(e)}\n{traceback.format_exc()}")
+            st.error(f"❌ Error marking attendance: {str(e)}")
+            st.session_state.batch_attendance_form_submitted = False
+    
+    if single_form_submitted and 'attendance_data' in st.session_state:
+        try:
+            logger.info("🔔 SINGLE FORM SUBMITTED - Processing attendance marking")
+            form_data = st.session_state.attendance_data
+            selected_students = form_data['selected_students']
+            subject_id_val = form_data['subject_id']
+            selected_subject = form_data['selected_subject']
+            selected_date = form_data['selected_date']
+            selected_period = form_data['selected_period']
+            all_enrolled_students = form_data['all_enrolled_students']
+            
+            logger.info(f"Form data retrieved: {len(selected_students)} students, subject_id={subject_id_val}, date={selected_date}")
+            
+            # Get selected student IDs
+            marked_ids = [student_id for student_id, selected in selected_students.items() if selected]
+            
+            logger.info(f"Marked IDs: {marked_ids}")
+            
+            if subject_id_val is None:
+                st.error("❌ Error: Subject ID is not available.")
+                logger.error("Subject ID is None when trying to mark attendance")
+            else:
+                success_count = 0
+                absent_count = 0
+                
+                logger.info(f"Processing attendance: {len(marked_ids)} students. Subject: {subject_id_val}, Date: {selected_date}, Period: {selected_period}")
+                
+                # Mark present students
+                if marked_ids:
+                    for student_id in marked_ids:
+                        try:
+                            success = mark_attendance(student_id, subject_id_val, selected_date, selected_period, status="present")
+                            if success:
+                                success_count += 1
+                        except Exception as e:
+                            logger.error(f"Error marking attendance for student_id={student_id}: {str(e)}")
+                
+                # Mark absent students
+                all_enrolled_ids = [s["id"] for s in all_enrolled_students]
+                absent_student_ids = [sid for sid in all_enrolled_ids if sid not in marked_ids]
+                
+                if absent_student_ids:
+                    for student_id in absent_student_ids:
+                        try:
+                            success = mark_attendance(student_id, subject_id_val, selected_date, selected_period, status="absent")
+                            if success:
+                                absent_count += 1
+                        except Exception as e:
+                            logger.error(f"Error marking absent attendance for student_id={student_id}: {str(e)}")
+                
+                if success_count > 0 or absent_count > 0:
+                    message = f"✅ Attendance saved for {success_count} present students"
+                    if absent_count > 0:
+                        message += f" and {absent_count} absent students"
+                    message += f" on {selected_date}!"
+                    st.success(message)
+                    
+                    st.session_state.last_attendance = {
+                        'subject': selected_subject,
+                        'date': selected_date,
+                        'period': selected_period,
+                        'count': success_count
+                    }
+                    
+                    # Clear form submission state
+                    st.session_state.attendance_form_submitted = False
+                    del st.session_state.attendance_data
+                    st.session_state.clear_attendance_form = True
+                    st.rerun()
+        except Exception as e:
+            logger.error(f"Error processing attendance form: {str(e)}\n{traceback.format_exc()}")
+            st.error(f"❌ Error marking attendance: {str(e)}")
+            st.session_state.attendance_form_submitted = False
+    
     # Process attendance button - just analyze, don't save yet
     if deepface_available and st.button("Analyze Image") and len(image_files) > 0 and subject_id is not None:
         # If processing all images is enabled and there are multiple images
@@ -1685,93 +1839,71 @@ elif page == "Take Attendance":
                             except Exception as e:
                                 st.error(f"Error loading image: {str(e)}")
                     
-                    # Manual verification for batch processing
-                    st.markdown("### Review & Edit Attendance")
-                    st.info("👆 Review the recognized students below. You can edit the attendance list before confirming.")
-                    
+                    # Automatically mark attendance for batch processing
                     # Get all enrolled students and recognized student IDs
                     all_enrolled_students = get_students_by_subject(subject_id)
                     recognized_student_ids = [student["id"] for student in recognized_student_details] if recognized_student_details else []
+                    selected_date = attendance_date.strftime("%Y-%m-%d")
                     
-                    # Create a form for attendance verification
-                    with st.form("batch_attendance_verification_form", clear_on_submit=False):
-                        st.markdown("**Select students to mark as present:**")
+                    # Automatically mark attendance
+                    try:
+                        logger.info(f"Auto-marking batch attendance: {len(recognized_student_ids)} recognized students. Subject: {subject_id}, Date: {selected_date}, Period: {selected_period}")
                         
-                        selected_students = {}
-                        
-                        # Show all enrolled students with checkboxes
-                        # Pre-check recognized students
-                        for student in all_enrolled_students:
-                            is_recognized = student["id"] in recognized_student_ids
-                            selected_students[student["id"]] = st.checkbox(
-                                f"{student['roll_no']} - {student['name']}",
-                                value=is_recognized,
-                                key=f"batch_verify_student_{student['id']}_{attendance_date.strftime('%Y-%m-%d')}_{selected_period}"
-                            )
-                        
-                        # Submit button
-                        submitted = st.form_submit_button("✅ Confirm and Mark Attendance", use_container_width=True, type="primary")
-                        
-                        if submitted:
-                            # Get selected student IDs
-                            marked_ids = [student_id for student_id, selected in selected_students.items() if selected]
-                            
-                            # Mark attendance in database
-                            selected_date = attendance_date.strftime("%Y-%m-%d")
+                        if subject_id is None:
+                            st.error("❌ Error: Subject ID is not available. Please select a subject and try again.")
+                            logger.error("Subject ID is None when trying to mark attendance")
+                        else:
                             success_count = 0
                             absent_count = 0
                             
-                            print(f"DEBUG: Trying to mark attendance for {len(marked_ids)} students")
-                            print(f"DEBUG: subject_id={subject_id}, date={selected_date}, period={selected_period}")
+                            # Mark present students (recognized)
+                            if recognized_student_ids:
+                                for student_id in recognized_student_ids:
+                                    try:
+                                        success = mark_attendance(student_id, subject_id, selected_date, selected_period, status="present")
+                                        if success:
+                                            success_count += 1
+                                        else:
+                                            logger.warning(f"Failed to mark attendance for student_id={student_id}")
+                                    except Exception as e:
+                                        logger.error(f"Error marking attendance for student_id={student_id}: {str(e)}")
+                                        st.warning(f"Failed to mark attendance for student {student_id}: {str(e)}")
                             
-                            # Mark present students
-                            if marked_ids:
-                                for student_id in marked_ids:
-                                    print(f"DEBUG: Marking attendance for student_id={student_id}")
-                                    success = mark_attendance(student_id, subject_id, selected_date, selected_period, status="present")
-                                    print(f"DEBUG: Attendance marking result: {success}")
-                                    if success:
-                                        success_count += 1
-                            
-                            # Mark absent students (those enrolled but not selected)
+                            # Mark absent students (those enrolled but not recognized)
                             all_enrolled_ids = [s["id"] for s in all_enrolled_students]
-                            absent_student_ids = [sid for sid in all_enrolled_ids if sid not in marked_ids]
+                            absent_student_ids = [sid for sid in all_enrolled_ids if sid not in recognized_student_ids]
                             
                             if absent_student_ids:
-                                print(f"DEBUG: Marking {len(absent_student_ids)} students as absent")
                                 for student_id in absent_student_ids:
-                                    success = mark_attendance(student_id, subject_id, selected_date, selected_period, status="absent")
-                                    if success:
-                                        absent_count += 1
+                                    try:
+                                        success = mark_attendance(student_id, subject_id, selected_date, selected_period, status="absent")
+                                        if success:
+                                            absent_count += 1
+                                    except Exception as e:
+                                        logger.error(f"Error marking absent attendance for student_id={student_id}: {str(e)}")
                             
                             if success_count > 0 or absent_count > 0:
-                                message = f"✅ Attendance saved for {success_count} present students"
+                                message = f"✅ Attendance automatically saved for {success_count} present students"
                                 if absent_count > 0:
                                     message += f" and {absent_count} absent students"
                                 message += f" on {selected_date}!"
                                 st.success(message)
-                                print(f"DEBUG: Successfully saved attendance for {success_count} present and {absent_count} absent students")
+                                logger.info(f"Successfully saved attendance for {success_count} present and {absent_count} absent students")
                                 
-                                # Store attendance data in session state before clearing
+                                # Store attendance data in session state
                                 st.session_state.last_attendance = {
                                     'subject': selected_subject,
                                     'date': selected_date,
                                     'period': selected_period,
                                     'count': success_count
                                 }
-                                
-                                # Clear form by triggering rerun with parameter
-                                st.session_state.clear_attendance_form = True
-                                
-                                # Add button to take new attendance
-                                st.button("Take New Attendance", on_click=lambda: st.session_state.update({
-                                    'clear_attendance_form': False,
-                                    'page': 'Take Attendance'
-                                }))
                             else:
-                                st.error("Failed to save attendance. Please try again.")
-                        else:
-                            st.warning("No students were selected for attendance.")
+                                st.warning("⚠️ No attendance was marked. Please check the logs.")
+                                logger.warning("No students were successfully marked for attendance")
+                    except Exception as e:
+                        logger.error(f"Error in automatic batch attendance marking: {str(e)}\n{traceback.format_exc()}")
+                        st.error(f"❌ Error marking attendance: {str(e)}")
+                        st.info("Please check the logs for more details.")
                     
                     # Visual representation of recognized students
                     st.markdown("### Student Photos")
@@ -1901,85 +2033,72 @@ elif page == "Take Attendance":
                         if len(detected_faces) > len(present_students):
                             st.warning(f"⚠️ {len(detected_faces) - len(present_students)} faces detected but not recognized. These may be students not registered in the system or false detections.")
                         
-                        # Manual verification before marking attendance
+                        # Automatically mark attendance for recognized students
                         selected_date = attendance_date.strftime("%Y-%m-%d")
                         
                         # Get all students enrolled in this subject
                         all_enrolled_students = get_students_by_subject(subject_id)
                         present_student_ids = [student["id"] for student in present_students] if present_students else []
                         
-                        # Manual verification interface
-                        st.markdown("### Review & Edit Attendance")
-                        st.info("👆 Review the recognized students below. You can edit the attendance list before confirming.")
-                        
-                        # Create a form for attendance verification
-                        with st.form("attendance_verification_form", clear_on_submit=False):
-                            st.markdown("**Select students to mark as present:**")
+                        # Automatically mark attendance
+                        try:
+                            logger.info(f"Auto-marking attendance: {len(present_student_ids)} recognized students. Subject: {subject_id}, Date: {selected_date}, Period: {selected_period}")
                             
-                            # Store selected students
-                            selected_students = {}
-                            
-                            # Show all enrolled students with checkboxes
-                            # Pre-check recognized students
-                            for student in all_enrolled_students:
-                                is_recognized = student["id"] in present_student_ids
-                                selected_students[student["id"]] = st.checkbox(
-                                    f"{student['roll_no']} - {student['name']}",
-                                    value=is_recognized,
-                                    key=f"verify_student_{student['id']}_{selected_date}_{selected_period}"
-                                )
-                            
-                            # Submit button
-                            submitted = st.form_submit_button("✅ Confirm and Mark Attendance", use_container_width=True, type="primary")
-                            
-                            if submitted:
-                                # Get selected student IDs
-                                marked_ids = [student_id for student_id, selected in selected_students.items() if selected]
+                            if subject_id is None:
+                                st.error("❌ Error: Subject ID is not available. Please select a subject and try again.")
+                                logger.error("Subject ID is None when trying to mark attendance")
+                            else:
+                                success_count = 0
+                                absent_count = 0
                                 
-                                if marked_ids or len(marked_ids) == 0:
-                                    success_count = 0
-                                    absent_count = 0
-                                    
-                                    # Mark present students
-                                    if marked_ids:
-                                        print(f"DEBUG: Marking attendance for {len(marked_ids)} present students")
-                                        print(f"DEBUG: subject_id={subject_id}, date={selected_date}, period={selected_period}")
-                                        
-                                        for student_id in marked_ids:
-                                            print(f"DEBUG: Marking attendance for student_id={student_id}")
+                                # Mark present students (recognized)
+                                if present_student_ids:
+                                    for student_id in present_student_ids:
+                                        try:
                                             success = mark_attendance(student_id, subject_id, selected_date, selected_period, status="present")
-                                            print(f"DEBUG: Attendance marking result: {success}")
                                             if success:
                                                 success_count += 1
-                                    
-                                    # Mark absent students (those enrolled but not selected)
-                                    all_enrolled_ids = [s["id"] for s in all_enrolled_students]
-                                    absent_student_ids = [sid for sid in all_enrolled_ids if sid not in marked_ids]
-                                    
-                                    if absent_student_ids:
-                                        print(f"DEBUG: Marking {len(absent_student_ids)} students as absent")
-                                        for student_id in absent_student_ids:
+                                            else:
+                                                logger.warning(f"Failed to mark attendance for student_id={student_id}")
+                                        except Exception as e:
+                                            logger.error(f"Error marking attendance for student_id={student_id}: {str(e)}")
+                                            st.warning(f"Failed to mark attendance for student {student_id}: {str(e)}")
+                                
+                                # Mark absent students (those enrolled but not recognized)
+                                all_enrolled_ids = [s["id"] for s in all_enrolled_students]
+                                absent_student_ids = [sid for sid in all_enrolled_ids if sid not in present_student_ids]
+                                
+                                if absent_student_ids:
+                                    for student_id in absent_student_ids:
+                                        try:
                                             success = mark_attendance(student_id, subject_id, selected_date, selected_period, status="absent")
                                             if success:
                                                 absent_count += 1
+                                        except Exception as e:
+                                            logger.error(f"Error marking absent attendance for student_id={student_id}: {str(e)}")
+                                
+                                if success_count > 0 or absent_count > 0:
+                                    message = f"✅ Attendance automatically saved for {success_count} present students"
+                                    if absent_count > 0:
+                                        message += f" and {absent_count} absent students"
+                                    message += f" on {selected_date}!"
+                                    st.success(message)
+                                    logger.info(f"Successfully saved attendance for {success_count} present and {absent_count} absent students")
                                     
-                                    if success_count > 0 or absent_count > 0:
-                                        message = f"✅ Attendance saved for {success_count} present students"
-                                        if absent_count > 0:
-                                            message += f" and {absent_count} absent students"
-                                        message += f" on {selected_date}!"
-                                        st.success(message)
-                                        print(f"DEBUG: Successfully saved attendance for {success_count} present and {absent_count} absent students")
-                                        
-                                        # Store attendance data in session state
-                                        st.session_state.last_attendance = {
-                                            'subject': selected_subject,
-                                            'date': selected_date,
-                                            'period': selected_period,
-                                            'count': success_count
-                                        }
-                                    else:
-                                        st.error("Failed to save attendance. Please check the logs.")
+                                    # Store attendance data in session state
+                                    st.session_state.last_attendance = {
+                                        'subject': selected_subject,
+                                        'date': selected_date,
+                                        'period': selected_period,
+                                        'count': success_count
+                                    }
+                                else:
+                                    st.warning("⚠️ No attendance was marked. Please check the logs.")
+                                    logger.warning("No students were successfully marked for attendance")
+                        except Exception as e:
+                            logger.error(f"Error in automatic attendance marking: {str(e)}\n{traceback.format_exc()}")
+                            st.error(f"❌ Error marking attendance: {str(e)}")
+                            st.info("Please check the logs for more details.")
                         
                         # Display recognized students in a table for reference
                         if present_students:
@@ -2653,7 +2772,9 @@ elif page == "Class Reports":
                         for i, subject in enumerate(subjects):
                             with subject_tabs[i]:
                                 subject_id = subject[0]
-                                subject_name = subject[1]
+                                subject_code = subject[1]  # This is the code (e.g., "FOC", "DSAJ")
+                                # Note: get_subjects() returns (id, code, name), but we're using code as the display name
+                                # So subject[1] is the code, which is what we need for SUBJECT_WEEKLY_CLASSES lookup
                                 
                                 # Get all dates in range
                                 dates = []
@@ -2711,17 +2832,37 @@ elif page == "Class Reports":
                                     # Convert to DataFrame
                                     subject_df = pd.DataFrame(rows)
                                     
+                                    # Calculate expected classes based on weekly schedule
+                                    try:
+                                        from config import SUBJECT_WEEKLY_CLASSES
+                                        from utils.db_utils import calculate_expected_classes
+                                        
+                                        # Use subject code to lookup weekly classes
+                                        weekly_classes = SUBJECT_WEEKLY_CLASSES.get(subject_code, 0)
+                                        date_from_str = date_from.strftime("%Y-%m-%d")
+                                        date_to_str = date_to.strftime("%Y-%m-%d")
+                                        expected_classes = calculate_expected_classes(subject_code, date_from_str, date_to_str)
+                                    except Exception as e:
+                                        logger.warning(f"Error calculating expected classes: {str(e)}")
+                                        weekly_classes = 0
+                                        expected_classes = len(dates)
+                                    
                                     # Display summary statistics
                                     avg_attendance = subject_df["Attendance %"].mean() if len(subject_df) > 0 else 0
                                     below_75_count = len(subject_df[subject_df["Attendance %"] < 75]) if len(subject_df) > 0 else 0
                                     
-                                    col1, col2, col3 = st.columns(3)
+                                    col1, col2, col3, col4 = st.columns(4)
                                     with col1:
                                         st.metric("Average Attendance", f"{avg_attendance:.1f}%")
                                     with col2:
                                         st.metric("Students Below 75%", str(below_75_count))
                                     with col3:
-                                        st.metric("Total Classes", str(len(dates)))
+                                        st.metric("Actual Classes", str(len(dates)))
+                                    with col4:
+                                        if weekly_classes > 0:
+                                            st.metric("Expected Classes", f"{expected_classes} ({weekly_classes}/week)")
+                                        else:
+                                            st.metric("Expected Classes", "N/A")
                                     
                                     # Display attendance data
                                     summary_cols = ["Roll No", "Name", "Present", "Total", "Attendance %"]
@@ -2946,6 +3087,7 @@ elif page == "Student Reports":
                                         "Subject Name": row["subject_name"],
                                         "Present": row["present_count"],
                                         "Total Classes": row["total_classes"],
+                                        "Expected Classes": row.get("expected_classes", "N/A"),
                                         "Attendance %": round(row["present_count"] / row["total_classes"] * 100, 1) if row["total_classes"] > 0 else 0
                                     }
                                     for row in attendance_summary

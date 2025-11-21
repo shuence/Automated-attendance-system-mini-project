@@ -334,5 +334,101 @@
     "created_at": "2025-11-22T02:19:14.651853",
     "expires_at": "2025-12-22T02:19:14.651842",
     "remember_me": true
+  },
+  "3717b6e872fcd509926d2f34a52fe71f0dfc12da9268d2c83cd91d5b59258287": {
+    "username": "admin",
+    "user_data": {
+      "id": 1,
+      "username": "admin",
+      "role": "HOD",
+      "name": "Administrator",
+      "email": "admin@example.com",
+      "department": "ENTC",
+      "permissions": [
+        "view_all_reports",
+        "edit_attendance",
+        "manage_students",
+        "manage_users",
+        "view_analytics",
+        "export_data",
+        "take_attendance",
+        "view_class_reports"
+      ]
+    },
+    "created_at": "2025-11-22T02:38:36.699077",
+    "expires_at": "2025-12-22T02:38:36.699066",
+    "remember_me": true
+  },
+  "2a7c28f22b1b03b5e59a57d77118ff319e5fcd8cfc5fb2bb4775e764e808d275": {
+    "username": "admin",
+    "user_data": {
+      "id": 1,
+      "username": "admin",
+      "role": "HOD",
+      "name": "Administrator",
+      "email": "admin@example.com",
+      "department": "ENTC",
+      "permissions": [
+        "view_all_reports",
+        "edit_attendance",
+        "manage_students",
+        "manage_users",
+        "view_analytics",
+        "export_data",
+        "take_attendance",
+        "view_class_reports"
+      ]
+    },
+    "created_at": "2025-11-22T02:51:49.277442",
+    "expires_at": "2025-12-22T02:51:49.277436",
+    "remember_me": true
+  },
+  "04a7b803dd51a9b70970e4055233987aa33bf013fd413bbeacc5902e9f08c702": {
+    "username": "admin",
+    "user_data": {
+      "id": 1,
+      "username": "admin",
+      "role": "HOD",
+      "name": "Administrator",
+      "email": "admin@example.com",
+      "department": "ENTC",
+      "permissions": [
+        "view_all_reports",
+        "edit_attendance",
+        "manage_students",
+        "manage_users",
+        "view_analytics",
+        "export_data",
+        "take_attendance",
+        "view_class_reports"
+      ]
+    },
+    "created_at": "2025-11-22T02:55:33.058684",
+    "expires_at": "2025-12-22T02:55:33.058675",
+    "remember_me": true
+  },
+  "ef14241e14a3edc6d62c49c8bb402856706ff31f43334b579b7f58884657b37f": {
+    "username": "admin",
+    "user_data": {
+      "id": 1,
+      "username": "admin",
+      "role": "HOD",
+      "name": "Administrator",
+      "email": "admin@example.com",
+      "department": "ENTC",
+      "permissions": [
+        "view_all_reports",
+        "edit_attendance",
+        "manage_students",
+        "manage_users",
+        "view_analytics",
+        "export_data",
+        "take_attendance",
+        "view_class_reports"
+      ]
+    },
+    "created_at": "2025-11-22T02:56:24.505971",
+    "expires_at": "2025-12-22T02:56:24.505966",
+    "remember_me": true
   }
 }
